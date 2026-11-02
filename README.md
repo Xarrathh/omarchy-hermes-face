@@ -1,34 +1,35 @@
-# Hermes Face — Omarchy bar widget
+# Hermes Face — Omarchy bar widget and agent head
 
-A bar slot for the [Hermes face](https://github.com/Xarrathh/hermes-face): one glyph that tells
-you what the holographic agent head is doing, with the controls you actually reach for.
+A bar slot and a holographic agent head: one glyph that tells you what the face is doing, with
+the controls you actually reach for. The face itself ships inside this repository, so installing
+the plugin gives you a working system — nothing is fetched from another project at install time.
 
 ```
 ○  idle        ◐  thinking        ◉  speaking        ✕  failed or not running
 ```
 
-- **Left click** — go to workspace 1 and bring the face window forward, starting it if it
-  is not running.
+- **Left click** — start the face if it is not running, then go to workspace 1 and bring its
+  window forward.
 - **Right click** — stop the live turn and its speech.
 - **Middle click** — restart the face bridge and wait until it answers again.
 
 The tooltip carries the current state, the mood while it speaks, an error if the bridge
 reported one, and whether theme sync is on.
 
-## Requirements
+## What gets installed, and where
 
-This widget is a remote control, not the face itself. It needs the Hermes face bridge
-answering on `http://127.0.0.1:9120/state` — install that first, pinned to an exact commit so
-what you install is the code that was reviewed:
+Nothing outside your home directory, no root, no credentials:
 
-```bash
-git clone https://github.com/Xarrathh/hermes-face.git
-cd hermes-face
-git checkout --detach 9143ef109859f4105537da5bd62635bfd9b39239
-./install.sh --no-autostart
-```
+- `~/.local/share/hermes-face/` — the face: `server.py`, the `web/` renderer, your `config.json`
+  (seeded from `config.example.json` on first run, never overwritten afterwards), the audio it
+  speaks, and a private `.venv` if one is needed.
+- `~/.config/systemd/user/hermes-face.service` — created on the first click so the bridge
+  survives a logout and the bar can restart it. Not created if the unit already exists.
+- `~/.cache/hermes-face-bar.log` — one line per click, restart and theme sync.
 
-Without the bridge the glyph shows `✕` and clicking it tries to start the window anyway.
+The only third-party dependency is the speech engine, `edge-tts`, which is installed into that
+private `.venv` from PyPI if no working copy is already present. The face runs without it; it
+just stays silent, and says so on screen.
 
 ## Install
 
@@ -40,6 +41,26 @@ omarchy restart shell          # a new bar widget is not instantiated until the 
 Or by hand: copy this folder to `~/.config/omarchy/plugins/pierregoosen.hermes-face/`, add
 `{"id": "pierregoosen.hermes-face"}` to a `bar.layout` section in `~/.config/omarchy/shell.json`,
 then `omarchy restart shell`.
+
+The first left click installs and starts the face and opens it. After that the click is instant.
+
+## Remove
+
+```bash
+omarchy plugin remove pierregoosen.hermes-face     # the widget
+systemctl --user disable --now hermes-face        # the bridge, if you want it stopped
+rm -rf ~/.local/share/hermes-face                 # the face, its config and your history
+rm -f ~/.config/systemd/user/hermes-face.service
+```
+
+Your `config.json` holds your tuned face and `history.json` your conversations — deleting the
+prefix deletes both, so move them aside first if you want to keep them.
+
+## Requirements
+
+Any Chromium-family browser (chromium, brave, vivaldi, chrome, edge) for the locked-down app
+window, or Firefox/LibreWolf as a fallback with a plain window. `python3` for the bridge.
+`curl` and `hyprctl` are used by the bar scripts.
 
 ## Optional extras
 
