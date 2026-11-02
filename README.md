@@ -1,5 +1,7 @@
 # Hermes Face — Omarchy bar widget and agent head
 
+![The Hermes face at rest: a cell-shaded holographic head over glyph rain](preview.png)
+
 A bar slot and a holographic agent head: one glyph that tells you what the face is doing, with
 the controls you actually reach for. The face itself ships inside this repository, so installing
 the plugin gives you a working system — nothing is fetched from another project at install time.
