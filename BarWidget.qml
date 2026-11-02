@@ -20,14 +20,17 @@ BarWidget {
   property string failure: ""
   property bool reachable: false
   property bool themeSync: true
+  property bool noAgent: false
 
   readonly property string glyph: !reachable ? "✕"
+    : noAgent ? "✕"
     : failure ? "✕"
     : agent === "speaking" ? "◉"
     : agent === "thinking" ? "◐"
     : "○"
 
   readonly property string tip: (!reachable ? "Hermes face: bridge not running — click to start, middle click to restart"
+    : noAgent ? "Hermes face: the Hermes agent is not installed — install it or set HERMES_BIN, then restart"
     : failure ? "Hermes face: " + failure + " — middle click to restart"
     : agent === "speaking" ? "Hermes face: speaking" + (mood ? " (" + mood + ")" : "") + " — right click stops it, middle click restarts"
     : agent === "thinking" ? "Hermes face: thinking — right click stops it, middle click restarts"
@@ -52,6 +55,7 @@ BarWidget {
           root.mood = String(s.mood || "")
           root.failure = String(s.error || "")
           root.themeSync = s.theme_sync !== false
+          root.noAgent = s.agent_cli === false
         } catch (e) {
           root.reachable = false
         }

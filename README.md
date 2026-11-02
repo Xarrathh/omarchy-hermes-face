@@ -18,6 +18,18 @@ the plugin gives you a working system — nothing is fetched from another projec
 The tooltip carries the current state, the mood while it speaks, an error if the bridge
 reported one, and whether theme sync is on.
 
+## Requirements
+
+- **Omarchy 4** with the Quickshell bar (this is a bar widget, not a window app).
+- **A Hermes agent** — the face is a head bolted onto your own agent, so `hermes` must be on
+  `PATH` (or `HERMES_BIN` set) and able to run `hermes chat --query-file`. It must be installed
+  separately; this plugin does not download or install it, and that is why the marketplace marks
+  the listing as manual setup.
+- `python3`, and optionally `edge-tts` for voice; without it the face displays silently.
+
+If the agent is missing the bar shows ✕ and the tooltip says so instead of pretending to be idle,
+and a turn answers "I have no Hermes agent to think with" rather than failing silently.
+
 ## What gets installed, and where
 
 Nothing outside your home directory, no root, no credentials:
