@@ -33,6 +33,11 @@ The only third-party dependency is the speech engine, `edge-tts`, which is insta
 private `.venv` from PyPI if no working copy is already present. The face runs without it; it
 just stays silent, and says so on screen.
 
+That engine is not local: it synthesises through Microsoft's Edge read-aloud service, so the
+sentence being spoken leaves the machine. Nothing else does — no audio, no microphone input, no
+history. See `SECURITY.md` for the full list of what runs, what it may open, and how the bridge is
+gated.
+
 ## Install
 
 ```bash

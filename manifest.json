@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "pierregoosen.hermes-face",
   "name": "Hermes Face",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": "Pierre-Johan Goosen",
   "license": "MIT",
   "description": "A holographic agent head for the bar: it shows idle, thinking, speaking or failed, opens the face on click, stops the turn on right click and restarts the bridge on middle click. The face itself ships inside this repository, so one install gives you a working system.",
