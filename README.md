@@ -46,6 +46,19 @@ then `omarchy restart shell`.
 
 The first left click installs and starts the face and opens it. After that the click is instant.
 
+## Updating
+
+```bash
+omarchy plugin update pierregoosen.hermes-face
+```
+
+Then **middle-click the bar icon** (or run `bin/face-restart.sh`). That action syncs the vendored
+`face/` into `~/.local/share/hermes-face/` *first* and restarts the bridge afterwards, so the code
+that runs is the code you just installed. A left click does the same sync when it notices the
+vendored version has changed, but it will not interrupt a live turn on an unchanged install.
+
+Your `config.json` (your tuned face) and `history.json` (your conversations) are never copied over.
+
 ## Remove
 
 ```bash
