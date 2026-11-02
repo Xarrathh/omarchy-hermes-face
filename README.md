@@ -12,7 +12,7 @@ the plugin gives you a working system — nothing is fetched from another projec
 
 - **Left click** — start the face if it is not running, then go to workspace 1 and bring its
   window forward.
-- **Right click** — stop the live turn and its speech.
+- **Right click** — open the Hermes menu: open the face, stop the turn, restart the bridge, theme sync, edit the look. Everything a touchpad can reach.
 - **Middle click** — restart the face bridge and wait until it answers again.
 
 The tooltip carries the current state, the mood while it speaks, an error if the bridge
