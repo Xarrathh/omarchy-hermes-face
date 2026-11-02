@@ -18,11 +18,14 @@ reported one, and whether theme sync is on.
 ## Requirements
 
 This widget is a remote control, not the face itself. It needs the Hermes face bridge
-answering on `http://127.0.0.1:9120/state` — install that first:
+answering on `http://127.0.0.1:9120/state` — install that first, pinned to an exact commit so
+what you install is the code that was reviewed:
 
 ```bash
 git clone https://github.com/Xarrathh/hermes-face.git
-cd hermes-face && ./install.sh --no-autostart
+cd hermes-face
+git checkout --detach 9143ef109859f4105537da5bd62635bfd9b39239
+./install.sh --no-autostart
 ```
 
 Without the bridge the glyph shows `✕` and clicking it tries to start the window anyway.
