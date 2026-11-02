@@ -4,13 +4,8 @@
 # longer enough to talk to the bridge.
 set -u
 PORT="${HERMES_FACE_PORT:-9120}"
-PREFIX="${HERMES_FACE_PREFIX:-$HOME/.local/share/hermes-face}"
-TOKEN=$(head -1 "$PREFIX/token" 2>/dev/null || true)
 LOG="$HOME/.cache/hermes-face-bar.log"
-if [ -z "$TOKEN" ]; then
-  exit 0
-fi
-state=$(curl -s --max-time 2 -H "X-Face-Token: $TOKEN" "http://127.0.0.1:$PORT/state") || exit 0
+state=$(curl -s --max-time 2 "http://127.0.0.1:$PORT/state") || exit 0
 agent=$(printf '%s' "$state" | grep -o '"agent": "[a-z]*"' | head -1 | cut -d'"' -f4)
 if [ -z "$agent" ]; then
   exit 0
@@ -19,6 +14,6 @@ if [ "$agent" = "idle" ]; then
   printf '%s %s\n' "$(date '+%F %T')" "stop-hotkey: nothing running" >>"$LOG"
   exit 0
 fi
-curl -s --max-time 3 -H "X-Face-Token: $TOKEN" -H 'content-type: application/json' -d '{}' \
+curl -s --max-time 3 -H 'content-type: application/json' -d '{}' \
   "http://127.0.0.1:$PORT/interrupt" >/dev/null 2>&1
 printf '%s %s\n' "$(date '+%F %T')" "stop-hotkey: stopped a turn (was $agent)" >>"$LOG"
