@@ -84,7 +84,7 @@ BarWidget {
       // A laptop touchpad has no middle button, so nothing important may live only there.
       // Left opens the face, right opens the Hermes menu through Omarchy's own menu plugin
       // (a real menu, keyboard-navigable, not a widget popup), middle still restarts.
-      if (b === Qt.RightButton) root.bar.run("omarchy menu summon hermes")
+      if (b === Qt.RightButton) root.bar.run(root.faceDir + "/bin/face-menu.sh")
       else if (b === Qt.MiddleButton) root.bar.run(root.faceDir + "/bin/face-restart.sh")
       else root.bar.run(root.faceDir + "/bin/face-focus.sh")
     }
