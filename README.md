@@ -94,27 +94,18 @@ Any Chromium-family browser (chromium, brave, vivaldi, chrome, edge) for the loc
 window, or Firefox/LibreWolf as a fallback with a plain window. `python3` for the bridge.
 `curl` and `hyprctl` are used by the bar scripts.
 
-## Optional extras
+## Included extras
 
-`bin/hermes-face-stop` is the global stop key — it interrupts the live turn and silences the
-voice, and refuses when nothing is running:
+These are installed for you on the first start — no copying files, no editing anything by hand.
+They run once, and if you remove one deliberately it stays removed.
 
-```bash
-install -Dm755 bin/hermes-face-stop ~/.local/bin/hermes-face-stop
-# then, in ~/.config/hypr/bindings.lua:
-#   o.bind("SUPER + SHIFT + H", "Stop Hermes face", "hermes-face-stop")
-```
-
-`hooks/theme-set.d/hermes-face-theme.hook` pulls the face's colours toward the active theme —
-hue and saturation only, never the geometry — and switches itself off the moment you pick
-colours by hand. Install it with:
-
-```bash
-mkdir -p ~/.config/omarchy/hooks/theme-set.d
-cp hooks/theme-set.d/hermes-face-theme.hook ~/.config/omarchy/hooks/theme-set.d/
-install -Dm755 bin/hermes-face-theme-sync ~/.local/bin/hermes-face-theme-sync
-hermes-face-theme-sync on      # or: off
-```
+- The global stop key, `hermes-face-stop`, which interrupts the live turn and silences the voice
+  and does nothing when there is no turn. A first start puts it in `~/.local/bin` and appends one
+  line to `~/.config/hypr/bindings.lua` — `SUPER + SHIFT + H` — leaving a backup of that file
+  beside it as `bindings.lua.hermes-face.bak`. Delete the line to drop the key.
+- The theme hook, `hooks/theme-set.d/hermes-face-theme.hook`, which pulls the face's hues toward
+  the active theme and never touches the geometry. It switches itself off the moment you pick
+  colours by hand; `hermes-face-theme-sync on` turns it back on.
 
 ## Notes
 
