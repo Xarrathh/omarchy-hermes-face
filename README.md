@@ -1,10 +1,11 @@
-# Hermes Face — Omarchy bar widget and agent head
+# Hermes Face — a face for your agent, on your bar
 
 ![The Hermes face at rest: a cell-shaded holographic head over glyph rain](preview.png)
 
-A bar slot and a holographic agent head: one glyph that tells you what the face is doing, with
-the controls you actually reach for. The face itself ships inside this repository, so installing
-the plugin gives you a working system — nothing is fetched from another project at install time.
+**What is an AI without a face?** This one has it: a holographic head that lives as a single glyph
+on your bar — idle, thinking, speaking or failed — and answers in your own agent's voice. The face
+ships inside this repository, so one install is the whole thing; nothing is fetched from another
+project at install time.
 
 ```
 ○  idle        ◐  thinking        ◉  speaking        ✕  failed or not running
