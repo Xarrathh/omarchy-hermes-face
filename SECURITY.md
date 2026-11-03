@@ -48,9 +48,10 @@ never passed on a command line or in a URL by these scripts.
 every audio and prompt file are `0600`. `harden_permissions()` re-applies this at each start, so an
 install created under a looser umask is corrected rather than left readable.
 
-Prompt text and reply text are never placed in process arguments: the CLI speech fallback writes to
-a private file and passes `--file`, and the agent is invoked with `--query-file`. A Hermes too old
-to support that is refused with an explanation rather than having the spoken words exposed in `ps`.
+Prompt text and reply text are never placed in process arguments. The bridge calls the agent with
+`--query-file`, and a CLI too old for that flag is refused rather than having the spoken words put
+in `ps`; `HERMES_FACE_ALLOW_INLINE_PROMPT=1` opts into the exposure explicitly, for an old install
+its owner chooses to keep. The CLI speech fallback writes to a private file and passes `--file`.
 
 ## What the automated baseline will flag
 
