@@ -707,8 +707,12 @@
         // how hard the anatomical shadows are: sockets, under the nose, the mouth seam
         const ao = clamp(P.matAO ?? 1, 0, 2);
 
-        // the light falls off to the edges and to the jaw: symmetric, one term each
-        s -= 0.26 * Math.pow(clamp(nx, 0, 1.25), 2.2);
+        // the light falls off to the edges and to the jaw: symmetric, one term each.
+        // nxa is the falloff in ABSOLUTE u, not in the row's half-width: normalising by the
+        // row width made every row brightest at u = 0, and since the crown and chin rows are
+        // narrow that painted a bright column straight down the middle of the head.
+        const nxa = Math.abs(u) / 0.98;
+        s -= 0.26 * Math.pow(clamp(nxa, 0, 1.25), 2.2);
         s -= 0.22 * Math.pow(clamp((vn - 0.58) / 0.42, 0, 1), 1.5);
 
         // sockets: the only shadows with a job -- they seat the eyes in the face
@@ -733,6 +737,11 @@
 
         // fade the relief out at the silhouette, or it draws its own hard edge
         s = 0.5 + (s - 0.5) * clamp((1 - nx) / 0.14, 0, 1);
+        // The crown and the point of the chin are too narrow to hold a lit centre: with the
+        // frontal lamp, full relief there leaves a bright stripe running the whole height of
+        // the head. Damp the relief where the skull is that narrow.
+        const narrow = clamp((vn - 0.04) / 0.10, 0, 1) * clamp((1.02 - vn) / 0.12, 0, 1);
+        s = 0.5 + (s - 0.5) * (0.25 + 0.75 * narrow);
         // ... and then re-centre it as absolute tone: 0.28 is unlit skin, the deltas
         // carry it up to the highlights and down to the shadow side. The cells measure
         // this value directly, so this number is the face's exposure, not a hint.
@@ -743,6 +752,20 @@
         const val = clamp(0.25 + (clamp(s, 0.05, 0.92) - 0.5) * 1.70, 0, 1) * 255;
         const o = (r * cols + c) * 4;
         out[o] = val; out[o + 1] = val; out[o + 2] = val; out[o + 3] = 255;
+      }
+    }
+    // A horizontal 3-tap pass over the finished field. The lamp and the nose both put their
+    // peak at u = 0, and the edge falloff darkens everything either side of it, so the field
+    // arrives as a narrow bright column down the middle of the head. One blur pass turns that
+    // column into a broad forehead highlight instead of a stripe.
+    const row = new Float32Array(cols);
+    for (let r = 0; r < rows; r++) {
+      const base = r * cols;
+      for (let c = 0; c < cols; c++) row[c] = out[(base + c) * 4];
+      for (let c = 0; c < cols; c++) {
+        const l = row[c > 0 ? c - 1 : c], m = row[c], q = row[c < cols - 1 ? c + 1 : c];
+        out[(base + c) * 4] = out[(base + c) * 4 + 1] = out[(base + c) * 4 + 2] =
+          0.25 * l + 0.50 * m + 0.25 * q;
       }
     }
     c2.putImageData(img, 0, 0);
