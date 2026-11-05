@@ -96,6 +96,16 @@
    "label": "Hair",
    "params": [
     {
+     "key": "hairOn",
+     "label": "Hair",
+     "kind": "select",
+     "options": [
+      "Off",
+      "On"
+     ],
+     "default": 1
+    },
+    {
      "key": "hairEdge",
      "label": "Hairline shape",
      "kind": "select",

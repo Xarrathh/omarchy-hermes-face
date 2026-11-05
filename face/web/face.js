@@ -1000,6 +1000,9 @@
   const HAIR = { mass: null, head: null };            // kept for the colour pass
 
   function drawHair(face, hairV) {
+    // the on/off switch: hair off also clears the mass the colour pass fills
+    const on = Math.round(P.hairOn ?? 1) === 1;
+    if (!on) { HAIR.mask = null; HAIR.tint = null; HAIR.mass = null; return; }
     const amt = clamp(P.hairAmount ?? 0, 0, 1);
     if (amt < 0.01) return;
     const strands = Math.round(clamp(P.hairDensity ?? 140, 20, 320) * (0.4 + 0.6 * amt));
