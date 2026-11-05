@@ -742,6 +742,10 @@
         // the head. Damp the relief where the skull is that narrow.
         const narrow = clamp((vn - 0.04) / 0.10, 0, 1) * clamp((1.02 - vn) / 0.12, 0, 1);
         s = 0.5 + (s - 0.5) * (0.25 + 0.75 * narrow);
+        // the two halves of the field meet at u = 0, and that meeting line reads as a seam
+        // straight down the face however softly it is lit: pull the centre toward mid-tone
+        const seam = Math.exp(-((u / 0.070) * (u / 0.070)));
+        s += (0.5 - s) * 0.60 * seam;
         // ... and then re-centre it as absolute tone: 0.28 is unlit skin, the deltas
         // carry it up to the highlights and down to the shadow side. The cells measure
         // this value directly, so this number is the face's exposure, not a hint.
