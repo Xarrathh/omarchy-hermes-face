@@ -931,7 +931,7 @@
     // of noise. This is what stopped the original face reading as a blurred photo.
     if (!CELLS.colGain || CELLS.colGain.length !== cols) CELLS.colGain = new Float32Array(cols);
     const colGain = CELLS.colGain;
-    for (let c = 0; c < cols; c++) colGain[c] = 0.80 + 0.28 * hash01(c * 12.9898 + 78.233);
+    for (let c = 0; c < cols; c++) colGain[c] = 0.90 + 0.14 * hash01(c * 12.9898 + 78.233);
 
     for (let r = 0; r < rows; r++) {
       // per-row geometry for the falloff: v in v-units and the silhouette half-width
@@ -944,6 +944,10 @@
         const xCell = bx + ((c + 0.5) / cols) * bw;
         const u = (xCell - HEAD.cx) / (HEAD.w * 0.5);
         const nx = Math.abs(u) / hw;
+        // The rim falloff below is measured in absolute u, not against the row's own
+        // half-width: row-normalised, every row is brightest at u = 0, so the narrow rows at
+        // the crown and chin each light their centre and the head grows a bright column.
+        const nxa = Math.abs(u) / 0.98;
         if (a < 0.05) continue;                       // outside the silhouette
         const L = (0.2126 * src[i] + 0.7152 * src[i + 1] + 0.0722 * src[i + 2]) / 255;
         let q = clamp((L - black) / (white - black), 0, 1);
@@ -959,7 +963,7 @@
         const dith = 1 + (hash01(r * 7.31 + c * 3.17) - 0.5) * 0.16 * gain;
         // 1 in the middle of the face, 1-round at the rim; the crown curves away too,
         // just less, or the top of the head turns into a dark cap
-        let fall = (1 - round * smoothstep(0.70, 1.05, nx)) *
+        let fall = (1 - round * smoothstep(0.70, 1.05, nxa)) *
                    (1 - round * 0.32 * (1 - smoothstep(0.01, 0.14, vn)));
         // An ear sits outside the silhouette, where that falloff is fully black -- which
         // is why measuring the ears in made them disappear. Inside an ear ellipse the
@@ -970,10 +974,15 @@
           if (d < 1) fall = Math.max(fall, 1 - round * 0.5 * smoothstep(0.5, 1.0, d));
         }
         const cg = colGain[c] * dith * (0.45 + 0.55 * fall) * shade;
+        // One last damper on the final tone: whatever the lamp and the bridge leave behind,
+        // the centre column is flattened here, at the cell stage, where it actually shows.
+        const cq = u / 0.15;
+        const seamK = Math.exp(-(cq * cq));
+        const cgF = cg * (1 - 0.18 * seamK);
         for (let sy = 0; sy < SUBY; sy++) {
           const rowCut = (sy === SUBY - 1 ? 1 - 0.20 * gain : 1);
           for (let sx = 0; sx < SUBX; sx++) {
-            const g = (0.45 + 0.55 * SUB_GAIN[sx]) * cg * rowCut;
+            const g = (0.45 + 0.55 * SUB_GAIN[sx]) * cgF * rowCut;
             const o = ((r * SUBY + sy) * tw + c * SUBX + sx) * 4;
             out[o] = Math.min(255, tone[0] * g);
             out[o + 1] = Math.min(255, tone[1] * g);
