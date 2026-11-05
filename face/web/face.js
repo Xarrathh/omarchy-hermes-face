@@ -457,13 +457,25 @@
       const v = v0 + (1 - v0) * (i / N);
       p.lineTo(ux(-halfWidth(clamp(v, 0, 1))), Y(v));
     }
-    // back across the forehead: the temples sit at v0 + temple, the middle at v0 + dip,
-    // which is the whole difference between a rounded, a peaked and a receding hairline
+    // back across the forehead: a sampled hairline curve. One parametric line -- temple
+    // height, centre dip, how wide the peak is, an optional part and an optional wave --
+    // covers every shape in the table, and a new one is a row, not a code path.
     const dip = edge ? edge.dip : -0.04;
     const temple = edge ? edge.temple : 0.02;
-    p.lineTo(ux(-hwTop), Y(v0 + temple));
-    p.quadraticCurveTo(ux(-hwTop * 0.55), Y(v0 + dip * 0.5), ux(0), Y(v0 + dip));
-    p.quadraticCurveTo(ux(hwTop * 0.55), Y(v0 + dip * 0.5), ux(hwTop), Y(v0 + temple));
+    const width = edge ? (edge.width ?? 0.9) : 0.9;
+    const wave = edge ? (edge.wave ?? 0) : 0;
+    const peakX = edge ? (edge.peakX ?? 0) : 0;
+    const yAt = (xn) => {
+      const q = (xn - peakX) / width;
+      const g = Math.exp(-(q * q));
+      return v0 + temple + (dip - temple) * g + wave * Math.sin(xn * Math.PI * 1.5);
+    };
+    const M = 12;
+    p.lineTo(ux(-hwTop), Y(yAt(-1)));
+    for (let i = 1; i <= M; i++) {
+      const xn = -1 + (2 * i) / M;
+      p.lineTo(ux(hwTop * xn), Y(yAt(xn)));
+    }
     p.closePath();
     return p;
   }
@@ -969,15 +981,21 @@
     { fall: 0.80, spread: 0.050, jitter: 0.35, drift: 0.12, line: 0.22, arch: 0.10 },   // long
     { fall: 0.60, spread: 0.090, jitter: 0.95, drift: 0.26, line: 0.24, arch: 0.35 },   // wild
   ];
-  // Hairline shapes across the forehead: dip is how far the middle sits below the temples,
-  // temple is how far the corners fall back. "peaked" and "receding" are the same two numbers
-  // in opposite directions.
+  // Hairline shapes across the forehead. dip and temple are the centre and corner heights,
+  // width is how broad the middle of the line is, peakX moves that middle sideways (a part)
+  // and wave adds the soft unevenness of a natural hairline.
   const HAIR_EDGES = [
-    { dip: -0.04, temple: 0.02 },   // rounded
-    { dip: 0.00, temple: 0.00 },    // straight
-    { dip: 0.07, temple: 0.01 },    // widow's peak
-    { dip: -0.06, temple: 0.08 },   // receding
-    { dip: -0.02, temple: 0.035 },  // soft
+    { dip: -0.040, temple: 0.020, width: 0.80 },                       // rounded
+    { dip: 0.000, temple: 0.000, width: 1.00 },                        // straight
+    { dip: 0.070, temple: 0.010, width: 0.28 },                        // widow's peak
+    { dip: -0.060, temple: 0.080, width: 1.60 },                       // receding
+    { dip: -0.020, temple: 0.035, width: 0.90 },                       // soft
+    { dip: 0.020, temple: 0.090, width: 0.30 },                        // m-shape
+    { dip: -0.100, temple: -0.020, width: 0.90 },                      // high arch
+    { dip: 0.040, temple: 0.040, width: 1.20 },                        // low fringe
+    { dip: -0.050, temple: 0.040, width: 0.60, peakX: -0.45 },         // parted
+    { dip: -0.020, temple: 0.020, width: 0.80, wave: 0.022 },          // wavy
+    { dip: 0.050, temple: 0.015, width: 0.20, peakX: 0.40 },           // side peak
   ];
   const HAIR = { mass: null, head: null };            // kept for the colour pass
 

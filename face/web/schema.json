@@ -104,7 +104,13 @@
       "Straight",
       "Widow's peak",
       "Receding",
-      "Soft"
+      "Soft",
+      "M-shape",
+      "High arch",
+      "Low fringe",
+      "Parted",
+      "Wavy",
+      "Side peak"
      ],
      "default": 0
     },
