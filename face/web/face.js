@@ -1736,7 +1736,12 @@
     const hp = headPath();
     const st = HAIR_STYLES[clamp(Math.round(P.hairStyle ?? 2), 0, HAIR_STYLES.length - 1)];
     const hairV = clamp(st.line + (P.hairLine ?? 0), 0.08, 0.36);
-    const fp = facePath(hairV, HAIR_EDGES[clamp(Math.round(P.hairEdge ?? 0), 0, HAIR_EDGES.length - 1)]);
+    const hairOn = Math.round(P.hairOn ?? 1) === 1;
+    // With hair off the head is whole: the hairline only exists to give the hair an edge, so
+    // keeping it would leave a bald skull with a shaved-looking line across the forehead.
+    const fp = hairOn
+      ? facePath(hairV, HAIR_EDGES[clamp(Math.round(P.hairEdge ?? 0), 0, HAIR_EDGES.length - 1)])
+      : hp;
 
     // pass 1: the anatomy, alone on its own layer -- one flat base, the sculpt field,
     // the ears. No room, no rain, no shell lighting: the cells must measure the face.
