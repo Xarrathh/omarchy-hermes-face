@@ -599,9 +599,6 @@
     const clip = new Path2D();
     clip.rect(0, 0, VW, VH);
     clip.addPath(headPath());
-    // In silhouette mode the hair is opaque, so the rain must not fall in front of it:
-    // adding the mass to this even-odd clip takes the whole fall out of the rain pass.
-    if (Math.round(P.hairMode ?? 0) === 2 && HAIR.mass) clip.addPath(HAIR.mass);
     ctx.clip(clip, 'evenodd');
     // One blit, not two: the additive pass was a second full-screen composite for a
     // faint glow, which is the expensive half of the rain.
@@ -991,8 +988,6 @@
     const lenK = clamp(P.hairLength ?? 0.95, 0.2, 1.8);
     const swayK = clamp(P.hairSway ?? 0.35, 0, 1);
     const shine = clamp(P.hairShine ?? 0.5, 0, 1);
-    const mane = Math.round(P.hairMode ?? 0) === 1;   // 0 = thread fall, 1 = data mane
-    const sil = Math.round(P.hairMode ?? 0) === 2;    // 2 = smooth silhouette
     const en = clamp(S.pEnergy, 0, 1);                // how loud she is right now
     const cx = HEAD.cx, cy = HEAD.cy;
     const st = HAIR_STYLES[clamp(Math.round(P.hairStyle ?? 2), 0, HAIR_STYLES.length - 1)];
@@ -1029,54 +1024,28 @@
     HAIR.mass = mass;
 
     ctx.save();
-    ctx.fillStyle = sil ? '#39404a' : (mane ? '#22282d' : '#8a8a8a');
+    ctx.fillStyle = '#22282d';                          // a dim bed under the light threads
     ctx.fill(mask, 'evenodd');
     ctx.clip(mask, 'evenodd');
     ctx.lineCap = 'round';
 
     const top = cy - HEAD.h * (0.50 + 0.004), bottom = cy + fR * 1.12;
 
-    // grooves: the gaps between locks, drawn dark under the lit strands, so the fall has
-    // striation instead of reading as one slab
-    const grooves = (mane || sil) ? 0 : Math.round(strands * 0.75);
-    for (let i = 0; i < grooves; i++) {
-      const f = hash01(i * 4.13 + 2.2);
-      const x0 = cx + (f - 0.5) * 2.05 * rx;
-      const h1 = hash01(i * 7.31 + 1.9);
-      const len = (bottom - top) * (0.60 + 0.40 * h1);
-      const drift = (f - 0.5) * DR * 0.75 + wob * 0.6;
-      ctx.strokeStyle = `rgba(18,18,18,${(0.35 + 0.25 * amt).toFixed(3)})`;
-      ctx.lineWidth = 1.2 + 1.4 * h1;
-      ctx.beginPath();
-      ctx.moveTo(x0, top);
-      ctx.bezierCurveTo(x0 + drift * 0.25, top + len * 0.35,
-                        x0 + drift * 0.70, top + len * 0.70,
-                        x0 + drift * 0.90, top + len);
-      ctx.stroke();
-    }
-    for (let i = 0; i < (sil ? 0 : strands); i++) {
+    for (let i = 0; i < strands; i++) {
       const f = hash01(i * 1.93 + 0.7);                 // where across the mass
       const x0 = cx + (f - 0.5) * 2.1 * rx;
       const h1 = hash01(i * 3.71 + 1.3), h2 = hash01(i * 9.17 + 5.1);
       const edge = Math.abs(x0 - cx) / rx;              // 0 centre, 1 rim
-      const len = (bottom - top) * (0.55 + jit * h1) * (0.55 + 0.45 * edge) * (mane ? 1 + 0.35 * en : 1);
+      const len = (bottom - top) * (0.55 + jit * h1) * (0.55 + 0.45 * edge) * (1 + 0.35 * en);
       const drift = (f - 0.5) * DR + wob * (0.3 + 0.7 * edge);
-      if (mane) {
-        // light threads: a bright travelling dash down each strand, brighter while she speaks.
-        // source-over, not 'lighter': the anatomy layer is transparent, so additive blending
-        // there just builds alpha and the cells measure it as almost black.
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.setLineDash([6 + 16 * h1, 12 + 22 * h2]);
-        ctx.lineDashOffset = -(S.t * (18 + 70 * h1) + i * 9);
-        ctx.strokeStyle = `rgba(130,240,255,${(0.35 + 0.5 * en + 0.15 * h2).toFixed(3)})`;
-        ctx.lineWidth = 1.2 + 1.6 * h1;
-      } else {
-        const g = Math.round(255 * (0.45 + 0.40 * h2));
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.setLineDash([]);
-        ctx.strokeStyle = `rgba(${g},${g},${g},${(0.30 + 0.25 * amt).toFixed(3)})`;
-        ctx.lineWidth = (1.6 + 1.6 * h1) * (0.8 + 0.4 * amt);
-      }
+      // light threads: a bright travelling dash down each strand, brighter while she speaks.
+      // source-over, not 'lighter': the anatomy layer is transparent, so additive blending
+      // there just builds alpha and the cells measure it as almost black.
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.setLineDash([6 + 16 * h1, 12 + 22 * h2]);
+      ctx.lineDashOffset = -(S.t * (18 + 70 * h1) + i * 9);
+      ctx.strokeStyle = `rgba(130,240,255,${((0.35 + 0.5 * en + 0.15 * h2) * (0.6 + 0.4 * shine)).toFixed(3)})`;
+      ctx.lineWidth = 1.2 + 1.6 * h1;
       ctx.beginPath();
       ctx.moveTo(x0, top);
       ctx.bezierCurveTo(x0 + drift * 0.25, top + len * 0.35,
@@ -1085,41 +1054,8 @@
       ctx.stroke();
     }
 
-    if (mane) {                                     // back to normal drawing for the rest
-      ctx.setLineDash([]);
-      ctx.globalCompositeOperation = 'source-over';
-    }
-
-    // sheen: a thinner, brighter pass, so the quantiser has highlights to catch and the
-    // hair reads as a lit surface rather than a flat curtain
-    const hi = (mane || sil) ? 0 : Math.round(strands * 0.35 * shine);
-    for (let i = 0; i < hi; i++) {
-      const f = hash01(i * 2.61 + 4.2);
-      const x0 = cx + (f - 0.5) * 2.0 * rx;
-      const h1 = hash01(i * 5.3 + 2.7), h2 = hash01(i * 11.9 + 0.4);
-      const len = (bottom - top) * (0.45 + 0.5 * h1);
-      const drift = (f - 0.5) * DR * 1.25 + wob;
-      ctx.strokeStyle = `rgba(210,242,246,${(0.10 + 0.18 * shine).toFixed(3)})`;
-      ctx.lineWidth = 0.6 + 0.7 * h2;
-      ctx.beginPath();
-      ctx.moveTo(x0, top);
-      ctx.bezierCurveTo(x0 + drift * 0.25, top + len * 0.35,
-                        x0 + drift * 0.70, top + len * 0.70,
-                        x0 + drift * 0.95, top + len);
-      ctx.stroke();
-    }
-
-    // The centre of the mass measures brighter than its sides once the cells quantise it, and
-    // a lit stripe straight down the middle reads as a seam. A broad horizontal gradient
-    // evens the fill out without touching the strand texture.
-    const side = ctx.createLinearGradient(cx - rx, 0, cx + rx, 0);
-    side.addColorStop(0, 'rgba(0,0,0,0.10)');
-    side.addColorStop(0.40, 'rgba(0,0,0,0.30)');
-    side.addColorStop(0.50, 'rgba(0,0,0,0.60)');
-    side.addColorStop(0.60, 'rgba(0,0,0,0.30)');
-    side.addColorStop(1, 'rgba(0,0,0,0.10)');
-    ctx.fillStyle = side;
-    if (!mane) ctx.fillRect(cx - rx, top, rx * 2, bottom - top);
+    ctx.setLineDash([]);
+    ctx.globalCompositeOperation = 'source-over';
 
     // The cap above the crown was reading as a bright spike: fade it into the background so
     // the silhouette ends softly instead of with a lit edge.
@@ -1148,32 +1084,6 @@
     ctx.globalCompositeOperation = 'color';
     ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${tint.toFixed(3)})`;
     ctx.fill(HAIR.mask, 'evenodd');
-    ctx.restore();
-  }
-
-  // Idea 3: the same mass, but as a smooth vector silhouette drawn over the cells with a
-  // single lit contour. No strands, no per-cell measurement of hair -- the cheapest of the
-  // three, and the only one that is not quantised.
-  function drawHairSilhouette() {
-    if (!HAIR.mask || !HAIR.mass) return;
-    const amt = clamp(P.hairAmount ?? 0, 0, 1);
-    if (amt < 0.01) return;
-    const cy = HEAD.cy, h = HEAD.h;
-    ctx.save();
-    ctx.clip(HAIR.mask, 'evenodd');
-    const g = ctx.createLinearGradient(0, cy - h * 0.52, 0, cy + h * 0.95);
-    g.addColorStop(0, 'rgba(10,15,20,1)');
-    g.addColorStop(0.55, 'rgba(24,37,47,1)');
-    g.addColorStop(1, 'rgba(48,76,90,1)');
-    ctx.fillStyle = g;
-    ctx.fill(HAIR.mass);
-    const rim = ctx.createLinearGradient(0, cy - h * 0.60, 0, cy + h * 1.02);
-    rim.addColorStop(0, 'rgba(170,245,255,0.18)');
-    rim.addColorStop(0.45, 'rgba(150,240,255,0.75)');
-    rim.addColorStop(1, 'rgba(120,225,245,0.28)');
-    ctx.strokeStyle = rim;
-    ctx.lineWidth = 1.8;
-    ctx.stroke(HAIR.mass);
     ctx.restore();
   }
 
@@ -1891,18 +1801,6 @@
 
     // rain in the air in front of the face (skipped over the head by the even-odd clip)
     drawRainFront(t);
-
-    // The silhouette goes last: it is opaque hair, so it has to occlude the rain that falls
-    // behind it rather than let the glyphs show through the mass.
-    if (Math.round(P.hairMode ?? 0) === 2) {
-      ctx.save();
-      ctx.translate(HEAD.cx + dxHead, HEAD.cy + dyHead);
-      ctx.rotate(S.roll);
-      ctx.scale(1 - 0.22 * Math.abs(yaw), 1 - 0.10 * Math.abs(pitch));
-      ctx.translate(-HEAD.cx, -HEAD.cy + S.breath);
-      drawHairSilhouette();
-      ctx.restore();
-    }
 
     // vignette (cached per resize; scanlines live in CSS, not 360 fillRects a frame)
     // CRT finish: 3-pixel scanlines from a 1x3 pattern (one fillRect, not one per
