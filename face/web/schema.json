@@ -96,6 +96,16 @@
    "label": "Hair",
    "params": [
     {
+     "key": "hairMode",
+     "label": "Hair material",
+     "kind": "select",
+     "options": [
+      "Thread fall",
+      "Data mane"
+     ],
+     "default": 0
+    },
+    {
      "key": "hairEdge",
      "label": "Hairline shape",
      "kind": "select",
