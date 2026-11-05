@@ -702,7 +702,11 @@
         // around; moving it puts a shadow on the far cheek and a lit ridge on the near one,
         // which is the difference between a lit mask and a head with a form.
         const lightX = clamp(P.matLightX ?? 0, -1, 1) * 0.55;
-        s += 0.24 * light * g2(u, vn, lightX, lightY, 1.02, lightSpread);
+        // the key light belongs to the face, not to the whole skull: above the hairline and
+        // below the jaw there is no cheek or brow to catch it, and lighting those narrow rows
+        // was the other half of the bright column down the middle
+        const faceBand = clamp((vn - 0.10) / 0.12, 0, 1) * clamp((0.94 - vn) / 0.12, 0, 1);
+        s += 0.24 * light * faceBand * g2(u, vn, lightX, lightY, 1.02, lightSpread);
 
         // how hard the anatomical shadows are: sockets, under the nose, the mouth seam
         const ao = clamp(P.matAO ?? 1, 0, 2);
