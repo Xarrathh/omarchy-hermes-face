@@ -437,6 +437,37 @@
 
   /* ---------------------------------------------------------------- backdrop */
 
+  // The face below the hairline: the head's own silhouette from the hairline down to the
+  // chin, closed across the forehead with a soft arc that sits highest at the centre. The
+  // hair is then everything outside this shape, so the two meet along a hairline instead of
+  // along the skull -- which is what made the old version read as a wig.
+  function facePath(hairV, edge) {
+    const p = new Path2D();
+    const N = 26;
+    const v0 = clamp(hairV, 0.06, 0.40);
+    const hwTop = halfWidth(clamp(v0, 0, 1));
+    const Y = (v) => vy(clamp(v, 0, 1)) + jawDrop(clamp(v, 0, 1));
+    p.moveTo(ux(hwTop), Y(v0));
+    for (let i = 1; i <= N; i++) {
+      const v = v0 + (1 - v0) * (i / N);
+      p.lineTo(ux(halfWidth(clamp(v, 0, 1))), Y(v));
+    }
+    p.lineTo(ux(0), Y(1));
+    for (let i = N; i >= 0; i--) {
+      const v = v0 + (1 - v0) * (i / N);
+      p.lineTo(ux(-halfWidth(clamp(v, 0, 1))), Y(v));
+    }
+    // back across the forehead: the temples sit at v0 + temple, the middle at v0 + dip,
+    // which is the whole difference between a rounded, a peaked and a receding hairline
+    const dip = edge ? edge.dip : -0.04;
+    const temple = edge ? edge.temple : 0.02;
+    p.lineTo(ux(-hwTop), Y(v0 + temple));
+    p.quadraticCurveTo(ux(-hwTop * 0.55), Y(v0 + dip * 0.5), ux(0), Y(v0 + dip));
+    p.quadraticCurveTo(ux(hwTop * 0.55), Y(v0 + dip * 0.5), ux(hwTop), Y(v0 + temple));
+    p.closePath();
+    return p;
+  }
+
   function drawBackdrop(t) {
     const bg = ctx.createRadialGradient(VW * 0.5, VH * 0.42, 0, VW * 0.5, VH * 0.52, Math.max(VW, VH) * 0.78);
     bg.addColorStop(0, 'rgb(4,16,22)');
@@ -801,7 +832,10 @@
     CELLS.dirty = false;
     if (!LAYER.c) buildLayer();
     const cols = clamp(Math.round(P.matPitch ?? 90), 24, 200);
-    const bx = ux(-1.08), by = vy(-0.08), bw = dU(2.16), bh = dV(1.30);
+    // The measured box is a little wider and taller than the head so the hair has somewhere
+    // to live: at 2.16 x 1.30 the crown sat 0.08 above the frame and long strands were cut
+    // off mid-air by the edge of the grid.
+    const bx = ux(-1.17), by = vy(-0.16), bw = dU(2.34), bh = dV(1.36);
     const rows = Math.max(4, Math.round(bh / (bw / cols)));
 
     // 1. measure: downsample the anatomy to one pixel per cell. Drawing with smoothing
@@ -918,6 +952,177 @@
     ctx.save();
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(CELLS.cv, CELLS.bx, CELLS.by, CELLS.bw, CELLS.bh);
+    ctx.restore();
+  }
+
+  /* ---------------------------------------------------------------- hair */
+  // Thread-fall hair, drawn on the anatomy layer like everything else, so compositeCells
+  // measures it and the same palette quantises it into the skin's own medium. The mass is
+  // deliberately larger than the skull: the roots inside the head fill are hidden by it,
+  // and only the volume above the crown and the fall past the temples is left showing.
+  // Hairlines. Each style is the same thread-fall with different proportions, so a new
+  // cut is a table row, not a new renderer.
+  const HAIR_STYLES = [
+    { fall: 0.16, spread: 0.030, jitter: 0.70, drift: 0.08, line: 0.17, arch: 1.00 },   // pixie
+    { fall: 0.34, spread: 0.040, jitter: 0.45, drift: 0.10, line: 0.20, arch: 0.85 },   // sleek
+    { fall: 0.46, spread: 0.060, jitter: 0.50, drift: 0.16, line: 0.22, arch: 0.65 },   // bob
+    { fall: 0.80, spread: 0.050, jitter: 0.35, drift: 0.12, line: 0.22, arch: 0.10 },   // long
+    { fall: 0.60, spread: 0.090, jitter: 0.95, drift: 0.26, line: 0.24, arch: 0.35 },   // wild
+  ];
+  // Hairline shapes across the forehead: dip is how far the middle sits below the temples,
+  // temple is how far the corners fall back. "peaked" and "receding" are the same two numbers
+  // in opposite directions.
+  const HAIR_EDGES = [
+    { dip: -0.04, temple: 0.02 },   // rounded
+    { dip: 0.00, temple: 0.00 },    // straight
+    { dip: 0.07, temple: 0.01 },    // widow's peak
+    { dip: -0.06, temple: 0.08 },   // receding
+    { dip: -0.02, temple: 0.035 },  // soft
+  ];
+  const HAIR = { mass: null, head: null };            // kept for the colour pass
+
+  function drawHair(face, hairV) {
+    const amt = clamp(P.hairAmount ?? 0, 0, 1);
+    if (amt < 0.01) return;
+    const strands = Math.round(clamp(P.hairDensity ?? 140, 20, 320) * (0.4 + 0.6 * amt));
+    const lenK = clamp(P.hairLength ?? 0.95, 0.2, 1.8);
+    const swayK = clamp(P.hairSway ?? 0.35, 0, 1);
+    const shine = clamp(P.hairShine ?? 0.5, 0, 1);
+    const cx = HEAD.cx, cy = HEAD.cy;
+    const st = HAIR_STYLES[clamp(Math.round(P.hairStyle ?? 2), 0, HAIR_STYLES.length - 1)];
+    const rx = HEAD.w * (0.50 + st.spread * (0.5 + 0.5 * amt));
+    const ryTop = HEAD.h * (0.50 + 0.018 * amt);
+    const fall = HEAD.h * st.fall * lenK;              // how far past the temples it hangs
+    const DR = HEAD.w * st.drift;
+    const jit = st.jitter;
+    const wob = Math.sin(S.t * 0.8) * 1.8 * swayK + S.yaw * HEAD.w * 0.06;
+
+    // the mass: an arc over the crown that carries on down both sides and ends in a
+    // deliberately uneven hairline -- a symmetrical curve reads as a hood, not as hair
+    const fR = fall * (0.82 + 0.30 * hash01(3.31));
+    const fL = fall * (0.82 + 0.30 * hash01(7.77));
+    // The bottom edge: short cuts clear the jaw (the arch rises to the chin), long hair has
+    // to keep going past it -- arching a long fall up to the chin is what split it into two
+    // curtains with a gap down the middle.
+    const arch = st.arch;
+    const midY = cy + HEAD.h * 0.50 * arch + fall * (1 - arch) * 1.02;
+    const mass = new Path2D();
+    mass.ellipse(cx, cy, rx, ryTop, 0, Math.PI, Math.PI * 2);
+    mass.lineTo(cx + rx * 0.96, cy + fR);
+    mass.quadraticCurveTo(cx + rx * 0.50, Math.max(cy + fR * 1.02, midY), cx, midY);
+    mass.quadraticCurveTo(cx - rx * 0.50, Math.max(cy + fL * 1.02, midY), cx - rx * 0.96, cy + fL);
+    mass.closePath();
+
+    // Never paint over the head. The face is built from semi-transparent sculpt layers, so
+    // anything bright behind it bleeds through as a stripe down the middle of the forehead;
+    // an even-odd mask of (mass minus head) gives clean roots instead.
+    const mask = new Path2D();
+    mask.addPath(mass);
+    mask.addPath(face);
+    HAIR.mask = mask;                                  // the colour pass draws the same area
+
+    ctx.save();
+    ctx.fillStyle = '#8a8a8a';                          // the body of the hair, under the threads
+    ctx.fill(mask, 'evenodd');
+    ctx.clip(mask, 'evenodd');
+    ctx.lineCap = 'round';
+
+    const top = cy - HEAD.h * (0.50 + 0.004), bottom = cy + fR * 1.12;
+
+    // grooves: the gaps between locks, drawn dark under the lit strands, so the fall has
+    // striation instead of reading as one slab
+    const grooves = Math.round(strands * 0.75);
+    for (let i = 0; i < grooves; i++) {
+      const f = hash01(i * 4.13 + 2.2);
+      const x0 = cx + (f - 0.5) * 2.05 * rx;
+      const h1 = hash01(i * 7.31 + 1.9);
+      const len = (bottom - top) * (0.60 + 0.40 * h1);
+      const drift = (f - 0.5) * DR * 0.75 + wob * 0.6;
+      ctx.strokeStyle = `rgba(18,18,18,${(0.35 + 0.25 * amt).toFixed(3)})`;
+      ctx.lineWidth = 1.2 + 1.4 * h1;
+      ctx.beginPath();
+      ctx.moveTo(x0, top);
+      ctx.bezierCurveTo(x0 + drift * 0.25, top + len * 0.35,
+                        x0 + drift * 0.70, top + len * 0.70,
+                        x0 + drift * 0.90, top + len);
+      ctx.stroke();
+    }
+    for (let i = 0; i < strands; i++) {
+      const f = hash01(i * 1.93 + 0.7);                 // where across the mass
+      const x0 = cx + (f - 0.5) * 2.1 * rx;
+      const h1 = hash01(i * 3.71 + 1.3), h2 = hash01(i * 9.17 + 5.1);
+      const edge = Math.abs(x0 - cx) / rx;              // 0 centre, 1 rim
+      const len = (bottom - top) * (0.55 + jit * h1) * (0.55 + 0.45 * edge);
+      const drift = (f - 0.5) * DR + wob * (0.3 + 0.7 * edge);
+      const g = Math.round(255 * (0.45 + 0.40 * h2));
+      ctx.strokeStyle = `rgba(${g},${g},${g},${(0.30 + 0.25 * amt).toFixed(3)})`;
+      ctx.lineWidth = (1.6 + 1.6 * h1) * (0.8 + 0.4 * amt);
+      ctx.beginPath();
+      ctx.moveTo(x0, top);
+      ctx.bezierCurveTo(x0 + drift * 0.25, top + len * 0.35,
+                        x0 + drift * 0.75, top + len * 0.72,
+                        x0 + drift, top + len);
+      ctx.stroke();
+    }
+
+    // sheen: a thinner, brighter pass, so the quantiser has highlights to catch and the
+    // hair reads as a lit surface rather than a flat curtain
+    const hi = Math.round(strands * 0.35 * shine);
+    for (let i = 0; i < hi; i++) {
+      const f = hash01(i * 2.61 + 4.2);
+      const x0 = cx + (f - 0.5) * 2.0 * rx;
+      const h1 = hash01(i * 5.3 + 2.7), h2 = hash01(i * 11.9 + 0.4);
+      const len = (bottom - top) * (0.45 + 0.5 * h1);
+      const drift = (f - 0.5) * DR * 1.25 + wob;
+      ctx.strokeStyle = `rgba(210,242,246,${(0.10 + 0.18 * shine).toFixed(3)})`;
+      ctx.lineWidth = 0.6 + 0.7 * h2;
+      ctx.beginPath();
+      ctx.moveTo(x0, top);
+      ctx.bezierCurveTo(x0 + drift * 0.25, top + len * 0.35,
+                        x0 + drift * 0.70, top + len * 0.70,
+                        x0 + drift * 0.95, top + len);
+      ctx.stroke();
+    }
+
+    // The centre of the mass measures brighter than its sides once the cells quantise it, and
+    // a lit stripe straight down the middle reads as a seam. A broad horizontal gradient
+    // evens the fill out without touching the strand texture.
+    const side = ctx.createLinearGradient(cx - rx, 0, cx + rx, 0);
+    side.addColorStop(0, 'rgba(0,0,0,0.10)');
+    side.addColorStop(0.40, 'rgba(0,0,0,0.30)');
+    side.addColorStop(0.50, 'rgba(0,0,0,0.60)');
+    side.addColorStop(0.60, 'rgba(0,0,0,0.30)');
+    side.addColorStop(1, 'rgba(0,0,0,0.10)');
+    ctx.fillStyle = side;
+    ctx.fillRect(cx - rx, top, rx * 2, bottom - top);
+
+    // The cap above the crown was reading as a bright spike: fade it into the background so
+    // the silhouette ends softly instead of with a lit edge.
+    const gy0 = cy - ryTop, gy1 = cy - HEAD.h * 0.46;
+    const fade = ctx.createLinearGradient(0, gy0, 0, gy1);
+    fade.addColorStop(0, 'rgba(0,0,0,0.85)');
+    fade.addColorStop(0.55, 'rgba(0,0,0,0.35)');
+    fade.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = fade;
+    ctx.fillRect(cx - rx - 2, gy0 - 6, rx * 2 + 4, gy1 - gy0 + 6);
+
+    ctx.restore();
+  }
+
+  // The cells take their tone from the palette, so hair cannot have a colour of its own from
+  // that pipeline. Multiplying the quantised hair by the chosen hue keeps the cell structure
+  // and moves only the colour, which is what "hair has its own colour" has to mean here.
+  function drawHairTint() {
+    const amt = clamp(P.hairAmount ?? 0, 0, 1);
+    const tint = clamp(P.hairTint ?? 0.6, 0, 1);
+    if (amt < 0.01 || tint < 0.01 || !HAIR.mask) return;
+    const c = hsl2rgb(P.hairHue ?? 275, 0.75, 0.5);
+    ctx.save();
+    // 'color' keeps the cell's own luminance and takes only hue+saturation from the fill --
+    // 'multiply' can only darken, which turned every hue into a muddy version of the theme.
+    ctx.globalCompositeOperation = 'color';
+    ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${tint.toFixed(3)})`;
+    ctx.fill(HAIR.mask, 'evenodd');
     ctx.restore();
   }
 
@@ -1539,6 +1744,9 @@
     drawBackdrop(t);
 
     const hp = headPath();
+    const st = HAIR_STYLES[clamp(Math.round(P.hairStyle ?? 2), 0, HAIR_STYLES.length - 1)];
+    const hairV = clamp(st.line + (P.hairLine ?? 0), 0.08, 0.36);
+    const fp = facePath(hairV, HAIR_EDGES[clamp(Math.round(P.hairEdge ?? 0), 0, HAIR_EDGES.length - 1)]);
 
     // pass 1: the anatomy, alone on its own layer -- one flat base, the sculpt field,
     // the ears. No room, no rain, no shell lighting: the cells must measure the face.
@@ -1557,8 +1765,9 @@
     ctx.rotate(S.roll);
     ctx.scale(1 - 0.22 * Math.abs(yaw), 1 - 0.10 * Math.abs(pitch));
     ctx.translate(-HEAD.cx, -HEAD.cy + S.breath);
-    drawCellBase(hp);
-    drawSculpt(hp);
+    drawHair(fp, hairV);
+    drawCellBase(fp);
+    drawSculpt(fp);
     // Ears are part of the anatomy again: they get measured into the cells like the rest
     // of the head. The rim falloff is taught about them (see compositeCells), which is
     // what was eating them when they were measured in before.
@@ -1576,6 +1785,16 @@
 
     ctx.save();
     ctx.translate(0, S.breath);
+
+    // hair colour: the same transform the anatomy pass used, minus the breath this context
+    // already carries, so the tint lands exactly on the quantised hair
+    ctx.save();
+    ctx.translate(HEAD.cx + dxHead, HEAD.cy + dyHead);
+    ctx.rotate(S.roll);
+    ctx.scale(1 - 0.22 * Math.abs(yaw), 1 - 0.10 * Math.abs(pitch));
+    ctx.translate(-HEAD.cx, -HEAD.cy);
+    drawHairTint();
+    ctx.restore();
 
     // thinking ring (under the face, so the features stay on top)
     if (S.think > 0.02) {
@@ -1701,6 +1920,11 @@
     },
     setGaze(x, y) { S.tgx = clamp(Number(x) || 0, -1, 1); S.tgy = clamp(Number(y) || 0, -1, 1);
                    S.gazeX = S.tgx; S.gazeY = S.tgy; S.nextSaccade = 1e9; },
+    // the webcam calls this ~4x/s: move the target only, so the eyes ease like real
+    // saccades instead of snapping on every poll
+    setGazeTarget(x, y) { S.tgx = clamp(Number(x) || 0, -1, 1);
+                          S.tgy = clamp(Number(y) || 0, -1, 1); S.nextSaccade = 1e9; },
+    releaseGaze() { if (S.nextSaccade > 1e8) S.nextSaccade = rnd(0.3, 1.1); },
     // a probe for exactly this class of bug: "the frame runs but nothing paints"
     debug: () => ({
       onMain: ctx === mainCtx, vw: VW, vh: VH, dpr: DPR,
