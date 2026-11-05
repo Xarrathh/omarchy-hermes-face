@@ -705,7 +705,7 @@
         // the key light belongs to the face, not to the whole skull: above the hairline and
         // below the jaw there is no cheek or brow to catch it, and lighting those narrow rows
         // was the other half of the bright column down the middle
-        const faceBand = clamp((vn - 0.10) / 0.12, 0, 1) * clamp((0.94 - vn) / 0.12, 0, 1);
+        const faceBand = clamp((vn - 0.05) / 0.08, 0, 1) * clamp((0.90 - vn) / 0.08, 0, 1);
         s += 0.24 * light * faceBand * g2(u, vn, lightX, lightY, 1.02, lightSpread);
 
         // how hard the anatomical shadows are: sockets, under the nose, the mouth seam
@@ -748,8 +748,8 @@
         s = 0.5 + (s - 0.5) * (0.25 + 0.75 * narrow);
         // the two halves of the field meet at u = 0, and that meeting line reads as a seam
         // straight down the face however softly it is lit: pull the centre toward mid-tone
-        const seam = Math.exp(-((u / 0.070) * (u / 0.070)));
-        s += (0.5 - s) * 0.60 * seam;
+        const seam = Math.exp(-((u / 0.055) * (u / 0.055)));
+        s += (0.5 - s) * 0.35 * seam;
         // ... and then re-centre it as absolute tone: 0.28 is unlit skin, the deltas
         // carry it up to the highlights and down to the shadow side. The cells measure
         // this value directly, so this number is the face's exposure, not a hint.
