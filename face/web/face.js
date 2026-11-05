@@ -746,10 +746,10 @@
         // the head. Damp the relief where the skull is that narrow.
         const narrow = clamp((vn - 0.04) / 0.10, 0, 1) * clamp((1.02 - vn) / 0.12, 0, 1);
         s = 0.5 + (s - 0.5) * (0.25 + 0.75 * narrow);
-        // the two halves of the field meet at u = 0, and that meeting line reads as a seam
-        // straight down the face however softly it is lit: pull the centre toward mid-tone
-        const seam = Math.exp(-((u / 0.055) * (u / 0.055)));
-        s += (0.5 - s) * 0.35 * seam;
+        // the two halves of the field meet at u = 0; the column that used to show there came
+        // from the row-normalised falloff and the column gain, both fixed at their source.
+        // Nothing is damped here any more: a centre damper only traded a bright line for a
+        // dark one.
         // ... and then re-centre it as absolute tone: 0.28 is unlit skin, the deltas
         // carry it up to the highlights and down to the shadow side. The cells measure
         // this value directly, so this number is the face's exposure, not a hint.
@@ -974,11 +974,7 @@
           if (d < 1) fall = Math.max(fall, 1 - round * 0.5 * smoothstep(0.5, 1.0, d));
         }
         const cg = colGain[c] * dith * (0.45 + 0.55 * fall) * shade;
-        // One last damper on the final tone: whatever the lamp and the bridge leave behind,
-        // the centre column is flattened here, at the cell stage, where it actually shows.
-        const cq = u / 0.15;
-        const seamK = Math.exp(-(cq * cq));
-        const cgF = cg * (1 - 0.18 * seamK);
+        const cgF = cg;
         for (let sy = 0; sy < SUBY; sy++) {
           const rowCut = (sy === SUBY - 1 ? 1 - 0.20 * gain : 1);
           for (let sx = 0; sx < SUBX; sx++) {
