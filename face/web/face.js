@@ -1022,6 +1022,14 @@
     mask.addPath(face);
     HAIR.mask = mask;                                  // the colour pass draws the same area
     HAIR.mass = mass;
+    // The colour pass stops a hair short of the face: the clip's antialiased edge leaves a
+    // fringe of skin inside the hair mask, and tinting that fringe paints a coloured rim
+    // along the jaw and chin.
+    const grown = new DOMMatrix().translate(cx, cy).scale(1.012, 1.008).translate(-cx, -cy);
+    const tmask = new Path2D();
+    tmask.addPath(mass);
+    tmask.addPath(face, grown);
+    HAIR.tint = tmask;
 
     ctx.save();
     ctx.fillStyle = '#22282d';                          // a dim bed under the light threads
@@ -1083,7 +1091,7 @@
     // 'multiply' can only darken, which turned every hue into a muddy version of the theme.
     ctx.globalCompositeOperation = 'color';
     ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${tint.toFixed(3)})`;
-    ctx.fill(HAIR.mask, 'evenodd');
+    ctx.fill(HAIR.tint || HAIR.mask, 'evenodd');
     ctx.restore();
   }
 
