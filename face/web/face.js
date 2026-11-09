@@ -96,9 +96,16 @@
   }
 
   function resize() {
-    DPR = Math.min(2, window.devicePixelRatio || 1);
+    // The frame is fill-bound: measured on a software rasteriser at 1280x577 CSS, the draw
+    // cost fits ~12 ms fixed + ~9.6 ms per megapixel, so 2x on a 2 MPx window asked for 3 MPx
+    // and 40 ms against a 33.3 ms budget. The budget is therefore pixels, not devicePixelRatio;
+    // the face is soft and holographic, so trading a little sharpness on a dense screen is the
+    // cheap way to stay inside the budget on a slow machine. 1x screens are untouched.
+    const PIXEL_BUDGET = 1.6e6;
     VW = Math.max(360, window.innerWidth);
     VH = Math.max(280, window.innerHeight);
+    DPR = Math.max(0.75, Math.min(Math.min(2, window.devicePixelRatio || 1),
+                                  Math.sqrt(PIXEL_BUDGET / (VW * VH))));
     cv.width = Math.round(VW * DPR);
     cv.height = Math.round(VH * DPR);
     cv.style.width = VW + 'px';
