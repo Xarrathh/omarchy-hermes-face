@@ -32,7 +32,11 @@ fail() { printf '%s' "$1" >"$MARKER" 2>/dev/null || true; say "ensure: $1"; exit
 ok() { rm -f "$MARKER" 2>/dev/null || true; }
 
 vendor_hash() {
-  ( cd "$PLUGIN_DIR/face" && { sha256sum server.py; ls web/* | sort | xargs sha256sum; } 2>/dev/null ) \
+  # NUL-separated on purpose: `ls web/* | sort | xargs sha256sum` splits on whitespace, so a
+  # filename with a space hashed as two names (one of them nonexistent) and a rename could
+  # leave the stamp unchanged. `find -print0` hashes exactly the files that exist.
+  ( cd "$PLUGIN_DIR/face" && { sha256sum server.py; find web -maxdepth 1 ! -type d -print0 \
+      | sort -z | xargs -0 -r sha256sum; } 2>/dev/null ) \
     | sha256sum | cut -d' ' -f1
 }
 
@@ -199,6 +203,12 @@ EOF
     cat <<EOF
 Restart=always
 RestartSec=2
+# The bridge is a local appliance that speaks to a browser and one agent CLI; it needs no
+# privilege escalation, and its own writes should never be group- or world-readable. The
+# prefix mode is the first line, this is the second: a file created by a stray helper under
+# this unit still lands 0600.
+NoNewPrivileges=yes
+UMask=0077
 
 [Install]
 WantedBy=default.target
