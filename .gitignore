@@ -4,3 +4,13 @@ user.js
 # looks runnable to a reviewer while being impossible to review.
 __pycache__/
 *.pyc
+# The prefix can be this checkout (`HERMES_FACE_PREFIX=$PWD`), and then the bridge writes his
+# config, his conversation history, the socket token and his speech straight into the tree. None
+# of that is source, and the token least of all. Root-anchored so `face/web/presets.json`, which
+# is the shipped preset library, stays tracked.
+/config.json
+/history.json
+/presets.json
+/token
+/audio/
+/*.json.tmp

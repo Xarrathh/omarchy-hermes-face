@@ -21,4 +21,4 @@ esac
 reason="the bridge is not running"
 [ -f "$MARKER" ] && reason=$(head -c 300 "$MARKER" 2>/dev/null)
 [ -n "$body" ] && reason="the bridge refused the request (is the token readable?)"
-printf '{"agent":"idle","error":"%s"}' "$(printf '%s' "$reason" | tr -d '"\\' | tr '\n' ' ')"
+printf '{"agent":"idle","error":"%s"}' "$(printf '%s' "$reason" | tr -s '[:cntrl:]' ' ' | tr -d '"\\')"
