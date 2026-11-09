@@ -31,10 +31,15 @@ reported one, and whether theme sync is on.
   `PATH` (or `HERMES_BIN` set) and able to run `hermes chat --query-file`. It must be installed
   separately; this plugin does not download or install it, and that is why the marketplace marks
   the listing as manual setup.
-- `python3`, and optionally `edge-tts` for voice; without it the face displays silently.
+- **A browser** — any Chromium-family browser (chromium, brave, vivaldi, chrome, edge) for the
+  locked-down app window, or Firefox/LibreWolf as a fallback with a plain window.
+- `python3` for the bridge, `curl` and `hyprctl` for the bar scripts, and optionally `edge-tts`
+  for voice; without it the face displays silently.
 
 If the agent is missing the bar shows ✕ and the tooltip says so instead of pretending to be idle,
-and a turn answers "I have no Hermes agent to think with" rather than failing silently.
+and a turn answers "I have no Hermes agent to think with" rather than failing silently. An agent
+too old to take `--query-file` is refused rather than fed your words on the command line, where
+`ps` would show them; `HERMES_FACE_ALLOW_INLINE_PROMPT=1` opts into that trade knowingly.
 
 ## What gets installed, and where
 
@@ -94,12 +99,6 @@ rm -f ~/.config/systemd/user/hermes-face.service
 Your `config.json` holds your tuned face and `history.json` your conversations — deleting the
 prefix deletes both, so move them aside first if you want to keep them.
 
-## Requirements
-
-Any Chromium-family browser (chromium, brave, vivaldi, chrome, edge) for the locked-down app
-window, or Firefox/LibreWolf as a fallback with a plain window. `python3` for the bridge.
-`curl` and `hyprctl` are used by the bar scripts.
-
 ## Included extras
 
 These are installed for you on the first start — no copying files, no editing anything by hand.
@@ -110,8 +109,9 @@ They run once, and if you remove one deliberately it stays removed.
   line to `~/.config/hypr/bindings.lua` — `SUPER + SHIFT + H` — leaving a backup of that file
   beside it as `bindings.lua.hermes-face.bak`. Delete the line to drop the key.
 - The theme hook, `hooks/theme-set.d/hermes-face-theme.hook`, which pulls the face's hues toward
-  the active theme and never touches the geometry. It switches itself off the moment you pick
-  colours by hand; `hermes-face-theme-sync on` turns it back on.
+  the active theme and never touches the geometry. It keeps doing that after you pick colours by
+  hand, so the theme can still move them; `hermes-face-theme-sync off` (or the menu's Theme sync
+  entry) is the real opt-out, and `on` gives the hues back to the theme.
 
 ## Notes
 

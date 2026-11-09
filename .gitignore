@@ -1,2 +1,6 @@
 user.js
 *.mp3
+# Compiled bytecode is a build artefact, not source: a committed .pyc ships a binary and
+# looks runnable to a reviewer while being impossible to review.
+__pycache__/
+*.pyc

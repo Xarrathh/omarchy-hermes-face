@@ -9,7 +9,9 @@
 #      possibly vulnerable, server keeps running and the fixes never load.
 # A click on an unchanged install does not interrupt a live turn.
 set -u
-
+# The prefix holds his conversations, his speech and the token, and this script creates it
+# before the server has a chance to harden it. Keep the seed and the stamp owner-only.
+umask 077
 PORT="${HERMES_FACE_PORT:-9120}"
 PREFIX="${HERMES_FACE_PREFIX:-$HOME/.local/share/hermes-face}"
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,6 +45,12 @@ sync_code() {
   cp -f "$PLUGIN_DIR/face/server.py" "$PREFIX/server.py" || { say "ensure: cannot copy server.py"; return 1; }
   mkdir -p "$PREFIX/web"
   cp -f "$PLUGIN_DIR"/face/web/* "$PREFIX/web/" || { say "ensure: cannot copy web/"; return 1; }
+  # A file deleted upstream must not keep being served from the prefix: `cp` never removes
+  # anything, so a retired script stayed live after an update.
+  for old in "$PREFIX"/web/*; do
+    [ -e "$old" ] || continue
+    [ -f "$PLUGIN_DIR/face/web/$(basename "$old")" ] || rm -f "$old"
+  done
   if [ ! -f "$PREFIX/config.json" ] && [ -f "$PLUGIN_DIR/face/config.example.json" ]; then
     cp -f "$PLUGIN_DIR/face/config.example.json" "$PREFIX/config.json"
   fi

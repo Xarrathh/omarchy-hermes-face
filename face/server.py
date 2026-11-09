@@ -81,6 +81,10 @@ VOXTYPE_STATE = Path(os.environ.get("HERMES_FACE_VOXTYPE_STATE")
                      or f"/run/user/{os.getuid()}/voxtype/state")
 
 PORT = int(os.environ.get("HERMES_FACE_PORT", "9120"))
+# A POST body is a sentence or a dictionary of numbers; anything larger is a mistake or an
+# attack, and reading it whole would let one request exhaust the bridge's memory.
+MAX_BODY = 1 << 20
+
 
 # Fallback for a box with no network (or no edge-tts): the voices this face shipped with.
 VOICES_STATIC = [
@@ -468,9 +472,16 @@ def custom_presets(cfg: dict) -> dict:
 def save_config(cfg: dict) -> None:
     """Write through a temp file: a truncate-in-place write can be observed
     half-finished by a concurrent GET /params, which then falls back to schema
-    defaults and silently replaces the tuned look."""
+    defaults and silently replaces the tuned look.
+
+    The temp file is created 0600 explicitly: `write_text` would take the process umask
+    (0644) and the rename carries that mode onto config.json, so every slider move quietly
+    re-opened a file the install promises is owner-only.
+    """
     tmp = CONFIG.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(cfg, indent=2) + "\n")
     os.replace(tmp, CONFIG)
 
 
@@ -646,6 +657,25 @@ def _speak_chunk(text: str, seq: int, index: int) -> int:
         STATE["audio"] = f"/audio/{out.name}"
         STATE["agent"] = "speaking"
     return index + 1
+
+
+def prune_audio(keep_seq: int) -> None:
+    """Remove the speech of every turn older than `keep_seq`.
+
+    The streaming path writes `reply-<seq>-<n>.mp3` and nothing ever deleted them, so the
+    spoken replies piled up in the prefix for as long as the face was in use — his voice on
+    disk forever, and a directory that only grows. A file belonging to the live turn is kept;
+    the page's queue for a finished turn is dead by the time a new one starts.
+    """
+    for f in AUDIO.glob("*.mp3"):
+        m = re.match(r"reply-(\d+)", f.name)
+        try:
+            if m and int(m.group(1)) < keep_seq:
+                f.unlink(missing_ok=True)
+            elif not m and time.time() - f.stat().st_mtime > 86400:
+                f.unlink(missing_ok=True)      # voice-test and boot leftovers
+        except OSError:
+            pass
 
 
 def _stream_turn(proc, seq: int, timeout: float = 240.0) -> tuple[str, str, str, int]:
@@ -954,6 +984,9 @@ def run_turn(text: str, seq: int) -> None:
                                         text=True, stdin=subprocess.DEVNULL,
                                         start_new_session=True)
             except Exception as exc:               # noqa: BLE001
+                # The prompt file holds his spoken words: do not leave it behind when the
+                # agent cannot even be spawned.
+                qfile.unlink(missing_ok=True)
                 reply = f"I hit an error: {exc}"
                 break
             with RUN_LOCK:
@@ -1085,6 +1118,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # Nothing here wants to be sniffed, framed or to leak a referrer: the page is a local
+        # appliance, and a mis-typed content type must not turn a JSON error into HTML that a
+        # browser renders.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        if ctype.startswith("text/html"):
+            # The page loads two same-origin scripts and nothing else, so the policy can be
+            # strict: no inline script, no remote origin, no plugins. `unsafe-inline` is
+            # needed only for the <style> block and the two inline style attributes.
+            self.send_header("Content-Security-Policy",
+                             "default-src 'self'; script-src 'self'; "
+                             "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                             "media-src 'self'; connect-src 'self'; object-src 'none'; "
+                             "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
 
@@ -1181,9 +1229,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, html.encode(), "text/html; charset=utf-8")
         if path.startswith("/face/"):
             rel = path[len("/face/"):]
-            if ".." not in rel:
+            if ".." not in rel and "\x00" not in rel:
                 f = (WEB / rel).resolve()
-                if f.is_file() and str(f).startswith(str(WEB.resolve())):
+                # `is_relative_to`, not a string prefix: a sibling directory whose name starts
+                # with "web" would otherwise pass the old startswith() test.
+                if f.is_file() and f.is_relative_to(WEB.resolve()):
                     ctype = {".png": "image/png", ".json": "application/json",
                              ".html": "text/html; charset=utf-8",
                              ".js": "text/javascript; charset=utf-8",
@@ -1231,7 +1281,15 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin") or self.headers.get("Referer") or ""
         if origin and not re.match(rf"^https?://(127\.0\.0\.1|localhost):{PORT}(/|$)", origin):
             return self._json({"error": "cross-origin POST refused"}, 403)
-        length = int(self.headers.get("Content-Length") or 0)
+        length = 0
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self._json({"error": "bad Content-Length"}, 400)
+        if length < 0 or length > MAX_BODY:
+            # An unbounded read is a one-request memory exhaustion, and a body this size is
+            # never a face command: /say takes a sentence, /params a dictionary of numbers.
+            return self._json({"error": "body too large"}, 413)
         raw = self.rfile.read(length) if length else b"{}"
         try:
             payload = json.loads(raw or b"{}")
@@ -1250,6 +1308,7 @@ class Handler(BaseHTTPRequestHandler):
                 seq = STATE["seq"]
                 STATE.update(agent="thinking", mood="curious", heard=text.strip(),
                              reply="", error="", audio=None, audio_parts=[])
+            prune_audio(seq)
             threading.Thread(target=run_turn, args=(text, seq), daemon=True).start()
             return self._json({"ok": True, "seq": seq})
 
@@ -1283,7 +1342,8 @@ class Handler(BaseHTTPRequestHandler):
                     save_config(cfg)
                 # Colours changed by hand stay changed, but they do not switch the theme hook
                 # off: on the next theme change the hook nudges the hues again, and he can put
-                # his own back afterwards. `hermes-face-theme-sync off` is the real opt-out.
+                # his own back afterwards. `hermes-face-theme-sync off` is the real opt-out —
+                # this used to be documented the other way round, which no code ever did.
                 out = {"ok": True, "params": cfg["params"],
                        "voice": cfg["voice"], "theme_sync": not THEME_SYNC_OFF.exists(),
                        "rev": config_rev()}
@@ -1318,26 +1378,36 @@ class Handler(BaseHTTPRequestHandler):
             out = AUDIO / f"voice-test-{int(time.time() * 1000)}.mp3"
             try:
                 synth(sample, out)
-                return self._json({"ok": True, "audio": f"/audio/{out.name}?t={int(time.time())}"})
+                # No `?t=` here: it used to carry a bare timestamp, which is not the token, so
+                # the page's own `withToken()` appended a second `t=` and the bridge read the
+                # useless first one. The socket check authorises the browser already.
+                return self._json({"ok": True, "audio": f"/audio/{out.name}"})
             except Exception as exc:               # noqa: BLE001
                 return self._json({"ok": False, "error": str(exc)}, 500)
 
         if path == "/interrupt":
             killed = _kill_turn()
             with LOCK:
-                # clear the caption too: the killed turn cannot report its own end,
-                # and a half-finished reply left on screen reads as the new answer
-                STATE.update(agent="idle", audio=None, reply="", seq=STATE["seq"] + 1)
+                # Clear the caption and the spoken chunks too: the killed turn cannot report
+                # its own end, and `audio_parts` surviving into the new seq made the page
+                # reset its index and replay the reply he just stopped.
+                STATE.update(agent="idle", audio=None, audio_parts=[], reply="", mood="neutral",
+                             seq=STATE["seq"] + 1)
             return self._json({"ok": True, "killed": killed})
 
         if path == "/spoken":
             with LOCK:
                 want = payload.get("seq")
-                if want is not None and int(want) != STATE["seq"]:
-                    return self._json({"ok": True, "ignored": "stale seq"})
+                if want is not None:
+                    try:
+                        stale = int(want) != STATE["seq"]
+                    except (TypeError, ValueError):
+                        return self._json({"ok": True, "ignored": "unreadable seq"})
+                    if stale:
+                        return self._json({"ok": True, "ignored": "stale seq"})
                 if STATE["agent"] == "thinking":
                     return self._json({"ok": True, "ignored": "turn in flight"})
-                STATE.update(agent="idle", audio=None)
+                STATE.update(agent="idle", audio=None, audio_parts=[])
             return self._json({"ok": True})
 
         return self._json({"error": "not found"}, 404)

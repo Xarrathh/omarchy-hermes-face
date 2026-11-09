@@ -46,12 +46,26 @@ never passed on a command line or in a URL by these scripts.
 
 `~/.local/share/hermes-face/` is mode `0700`; `config.json`, `history.json`, the token file and
 every audio and prompt file are `0600`. `harden_permissions()` re-applies this at each start, so an
-install created under a looser umask is corrected rather than left readable.
+install created under a looser umask is corrected rather than left readable — and every rewrite of
+`config.json` creates its temp file `0600` rather than inheriting the umask, because the rename
+carries that mode with it.
+
+Spoken audio is pruned as the face is used: a new turn deletes the `reply-*.mp3` files of older
+turns, and `voice-test-*` leftovers older than a day go too, so his voice does not accumulate in
+the prefix forever.
 
 Prompt text and reply text are never placed in process arguments. The bridge calls the agent with
 `--query-file`, and a CLI too old for that flag is refused rather than having the spoken words put
 in `ps`; `HERMES_FACE_ALLOW_INLINE_PROMPT=1` opts into the exposure explicitly, for an old install
 its owner chooses to keep. The CLI speech fallback writes to a private file and passes `--file`.
+
+## Headers
+
+The page is served with a strict `Content-Security-Policy` (`default-src 'self'`, no inline
+script, `connect-src 'self'`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`; every response is `Cache-Control:
+no-store`. A `POST` body is capped at 1 MiB and a malformed `Content-Length` is answered with 400
+instead of being read.
 
 ## What the automated baseline will flag
 
