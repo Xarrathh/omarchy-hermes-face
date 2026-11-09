@@ -145,9 +145,16 @@ PYEOF
 install_extras
 
 # Face-to-face is opt-in: once a peer key exists (or HERMES_FACE_PEER=1 is set) the LAN bridge is
-# kept installed and running, otherwise the installer never opens a port.
+# kept installed and running, otherwise the installer never opens a port. The firewall rule is part
+# of that install: applied once, when the peer is first enabled, and never re-prompted.
 if [ -f "$PREFIX/peer.key" ] || [ "${HERMES_FACE_PEER:-0}" = "1" ]; then
-  bash "$PLUGIN_DIR/bin/face-peer-enable.sh" >/dev/null 2>&1 || say "ensure: peer enable failed"
+  if [ ! -f "$PREFIX/.firewall-applied" ]; then
+    bash "$PLUGIN_DIR/bin/face-peer-enable.sh" --firewall >/dev/null 2>&1 \
+      && say "ensure: peer firewall rule applied" \
+      || say "ensure: peer firewall rule not applied (approval dismissed?) — file is at $PREFIX/peer-firewall.nft"
+  else
+    bash "$PLUGIN_DIR/bin/face-peer-enable.sh" >/dev/null 2>&1 || say "ensure: peer enable failed"
+  fi
 fi
 
 agent_binary() {

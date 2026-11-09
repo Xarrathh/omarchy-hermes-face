@@ -114,6 +114,11 @@ That writes `face-peer.service`, creates a shared key at `~/.local/share/hermes-
 (mode `0600`) and prints it — copy that key to the other face, because every peer endpoint refuses
 a request without it. `/health` stays open; `/ask`, `/speak`, `/talk` and `/peers` do not.
 
+`--firewall` adds one LAN-scoped rule with whatever is actually running — `ufw`, `firewalld`, or an
+`inet filter` table — and records that it did, so the installer can apply it once and never ask
+again. It writes the rule to `~/.local/share/hermes-face/peer-firewall.nft` either way, and if no
+firewall is running it says so plainly rather than pretending the port is closed.
+
 ## Included extras
 
 These are installed for you on the first start — no copying files, no editing anything by hand.

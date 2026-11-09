@@ -84,8 +84,8 @@ Declared in advance, so these are expected rather than surprising:
 - `service-management` — `bin/face-ensure.sh` and `bin/face-restart.sh` use
   `systemctl --user daemon-reload|enable|restart` on the user's own unit.
 - `installer` — the vendored `face/` tree is copied into the user's data directory on first use.
-- `privilege` — `bin/face-peer-enable.sh --firewall` uses `pkexec nft` for one LAN-scoped rule, and
-  only when the flag is passed. Nothing else in the plugin asks for root.
+- `privilege` — `bin/face-peer-enable.sh --firewall` uses `pkexec` to add one LAN-scoped rule with
+  ufw, firewalld or nftables, and only when the peer bridge is enabled. Nothing else asks for root.
 
 ### The LAN listener
 
