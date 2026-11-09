@@ -244,7 +244,30 @@ if use_systemd; then
     fi
   fi
   say "ensure: restarting $UNIT_NAME to run the installed code"
-  systemctl --user restart "$UNIT" >/dev/null 2>&1 || true
+  # Restart by NAME, never by path: `systemctl --user restart ~/.config/systemd/user/x.service`
+  # is parsed as a mount unit ("home-pierregoosen-.config-systemd-user-hermes\x2dface.service.mount")
+  # and fails with exit 5 — which a `|| true` then hid completely. Observed on a real install:
+  # the log said "restarting … bridge is answering" while the process from days earlier kept
+  # serving the pre-audit code, because a healthy /health says nothing about which code the
+  # running process imported.
+  pid_before=$(systemctl --user show -p MainPID --value "$UNIT_NAME" 2>/dev/null || true)
+  if ! restart_err=$(systemctl --user restart "$UNIT_NAME" 2>&1); then
+    say "ensure: restart failed: $restart_err"
+    fail "restart failed: $restart_err"
+  fi
+  pid_after=$(systemctl --user show -p MainPID --value "$UNIT_NAME" 2>/dev/null || true)
+  if [ -n "${pid_before:-}" ] && [ "${pid_before:-0}" != "0" ] && [ "$pid_before" = "${pid_after:-}" ]; then
+    # The same process is still holding the unit: stop it outright and start again, then
+    # refuse to report success if the pid has not moved.
+    say "ensure: restart left pid $pid_before in place — stopping and starting"
+    systemctl --user stop "$UNIT_NAME" >/dev/null 2>&1 || true
+    systemctl --user start "$UNIT_NAME" >/dev/null 2>&1 || true
+    pid_after=$(systemctl --user show -p MainPID --value "$UNIT_NAME" 2>/dev/null || true)
+    if [ "$pid_before" = "${pid_after:-}" ]; then
+      fail "the bridge is still the old process (pid $pid_before) after a restart — the new code is on disk but not running"
+    fi
+  fi
+  say "ensure: running pid ${pid_after:-?} ($(systemctl --user show -p ActiveEnterTimestamp --value "$UNIT_NAME" 2>/dev/null || echo 'start time unknown'))"
 else
   # No systemd: an old bridge may still be holding the port, and starting a second one would
   # simply fail to bind while the old code kept answering. Stop the process that owns the port.
