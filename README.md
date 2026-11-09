@@ -2,6 +2,11 @@
 
 ![The Hermes face at rest: a cell-shaded holographic head over glyph rain](preview.png)
 
+<p align="center">
+  <img src="screenshots/editor.png" width="49%" alt="The settings drawer: presets, sliders and the hair controls">
+  <img src="screenshots/menu.png" width="49%" alt="Right click on the bar glyph: the Hermes menu">
+</p>
+
 **What is an AI without a face?** This one has it: a holographic head that lives as a single glyph
 on your bar — idle, thinking, speaking or failed — and answers in your own agent's voice. The face
 ships inside this repository, so one install is the whole thing; nothing is fetched from another
