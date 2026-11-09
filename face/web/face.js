@@ -2004,7 +2004,13 @@
       for (const k of Object.keys(next)) {
         const v = next[k];
         if (typeof v === 'number' && !isFinite(v)) continue;
-        clean[k] = v;
+        // Filtering non-finite values is half the guard: a *finite* number still reaches the
+        // geometry maths, and `earSize: -1e6` threw IndexSizeError (negative ellipse radius)
+        // in drawEars and froze the frame. RANGE is the schema's own [min, max], built at
+        // boot, so every writer -- /params polling, the editor, a console poke -- lands on a
+        // value the sliders could have produced.
+        const r = RANGE[k];
+        clean[k] = (typeof v === 'number' && r) ? Math.min(r[1], Math.max(r[0], v)) : v;
       }
       next = clean;
     }
