@@ -283,6 +283,7 @@
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(P),
         });
+        if (!r.ok) throw new Error('save refused: ' + r.status);
         const j = await r.json();
         if (j && j.params) P = Object.assign(P, j.params);
         saveState.textContent = 'saved';
@@ -589,6 +590,21 @@
         body: JSON.stringify({ text }),
       });
       if (r.status === 409) heardEl.textContent = 'still thinking — one moment';
+      if (!r.ok) {
+        // The bridge refuses an over-long turn (413) and a malformed one (400), and before
+        // this the words were already cleared from the line and the caption still read
+        // "you: <the whole paste>" — the message looked sent and never was.
+        let why = 'the bridge refused that (' + r.status + ')';
+        try {
+          const j = await r.json();
+          if (j && j.error) why = String(j.error);
+        } catch { /* not JSON: keep the status */ }
+        heardEl.textContent = why;
+        if (!line.value) line.value = text;      // give the words back; they were not sent
+        said.textContent = '';
+        busy = wasBusy;
+        return;
+      }
     } catch {
       heardEl.textContent = 'the agent bridge is down';
     }
@@ -627,6 +643,9 @@
 
   document.addEventListener('click', (e) => {
     if (!panel.classList.contains('open') || panel.contains(e.target) || e.target.id === 'gear') return;
+    // The history drawer is a reading surface: taking the caret out of it meant Escape and the
+    // scroll keys went to the chat line while the panel was open.
+    if (e.target.closest && e.target.closest('#histPanel')) return;
     line.focus();
   });
   addEventListener('load', () => line.focus());
@@ -646,7 +665,13 @@
       const r = await fetch('/params', { cache: 'no-store' });
       const fresh = await r.json();
       if (fresh && typeof fresh === 'object') {
+        // The model has to move with the face, not just the paint. It did not, and the very
+        // next slider drag posted the stale `P` back: the theme hook's colours survived
+        // exactly one touch. Reproduced — hue 30 written externally, one headWidth nudge,
+        // hue back to 141 in config.json.
+        P = Object.assign(P, fresh);
         api().setParams(fresh);
+        syncInputs();
         document.dispatchEvent(new CustomEvent('face:params', { detail: fresh }));
       }
     } catch { /* the next revision change will try again */ }
