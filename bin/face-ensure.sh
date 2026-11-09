@@ -144,6 +144,12 @@ PYEOF
 
 install_extras
 
+# Face-to-face is opt-in: once a peer key exists (or HERMES_FACE_PEER=1 is set) the LAN bridge is
+# kept installed and running, otherwise the installer never opens a port.
+if [ -f "$PREFIX/peer.key" ] || [ "${HERMES_FACE_PEER:-0}" = "1" ]; then
+  bash "$PLUGIN_DIR/bin/face-peer-enable.sh" >/dev/null 2>&1 || say "ensure: peer enable failed"
+fi
+
 agent_binary() {
   # Do not trust the caller's PATH: the bar launches this with a different environment than a
   # login shell, and `command -v` then finds nothing even though hermes is installed.

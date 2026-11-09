@@ -84,6 +84,17 @@ Declared in advance, so these are expected rather than surprising:
 - `service-management` — `bin/face-ensure.sh` and `bin/face-restart.sh` use
   `systemctl --user daemon-reload|enable|restart` on the user's own unit.
 - `installer` — the vendored `face/` tree is copied into the user's data directory on first use.
+- `privilege` — `bin/face-peer-enable.sh --firewall` uses `pkexec nft` for one LAN-scoped rule, and
+  only when the flag is passed. Nothing else in the plugin asks for root.
+
+### The LAN listener
+
+`face/peer.py` is opt-in (`bin/face-peer-enable.sh`) and binds TCP 9910 plus a UDP beacon. Every
+peer endpoint requires the shared key from `~/.local/share/hermes-face/peer.key` (`0600`), compared
+in constant time; only `/health` answers unauthenticated, and it reveals nothing but an id and a
+version. Requests from loopback are trusted by address, the same way the local bridge is. Outbound
+calls send the key in a header, never in a URL or on a command line. The key is created on first
+start and must be copied to the other face — there is no discovery of keys, only of presence.
 
 There are no findings-pattern matches: no `curl | sh`, no unpinned remote git execution, no
 privileged-process control from shared temporary files, and no privilege-escalation rules of any

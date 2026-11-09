@@ -99,6 +99,21 @@ rm -f ~/.config/systemd/user/hermes-face.service
 Your `config.json` holds your tuned face and `history.json` your conversations — deleting the
 prefix deletes both, so move them aside first if you want to keep them.
 
+## Face to face
+
+Two faces on the same network can hold a conversation, and each speaks with its own voice: the
+wire carries text for turn-taking and the mp3 for the answer, never a microphone. It is **opt-in**
+because it opens a port:
+
+```bash
+bin/face-peer-enable.sh              # install, start, print the firewall rule
+bin/face-peer-enable.sh --firewall   # also apply an nftables rule limited to your LAN subnet
+```
+
+That writes `face-peer.service`, creates a shared key at `~/.local/share/hermes-face/peer.key`
+(mode `0600`) and prints it — copy that key to the other face, because every peer endpoint refuses
+a request without it. `/health` stays open; `/ask`, `/speak`, `/talk` and `/peers` do not.
+
 ## Included extras
 
 These are installed for you on the first start — no copying files, no editing anything by hand.
