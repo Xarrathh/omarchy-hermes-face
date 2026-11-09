@@ -84,6 +84,8 @@ PORT = int(os.environ.get("HERMES_FACE_PORT", "9120"))
 # A POST body is a sentence or a dictionary of numbers; anything larger is a mistake or an
 # attack, and reading it whole would let one request exhaust the bridge's memory.
 MAX_BODY = 1 << 20
+MAX_SPOKEN = 8000           # characters /say will accept; a spoken turn is a sentence
+MAX_VOICE_TEST = 400        # characters the voice sampler will read
 
 
 # Fallback for a box with no network (or no edge-tts): the voices this face shipped with.
@@ -1386,6 +1388,8 @@ class Handler(BaseHTTPRequestHandler):
             text = str(payload.get("text") or "")
             if not text.strip():
                 return self._json({"error": "empty"}, 400)
+            if len(text) > MAX_SPOKEN:
+                return self._json({"error": f"text too long (limit {MAX_SPOKEN} characters)"}, 413)
             # The new command always wins: drop whatever is running instead of
             # refusing the turn. The killed run notices its seq moved and stays quiet.
             _kill_turn()
@@ -1460,7 +1464,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(out)
 
         if path == "/voice-test":
-            sample = str(payload.get("text") or "This is how I sound. Say the word and I will change it.")
+            sample = str(payload.get("text")
+                         or "This is how I sound. Say the word and I will change it.")[:MAX_VOICE_TEST]
             out = AUDIO / f"voice-test-{int(time.time() * 1000)}.mp3"
             try:
                 synth(sample, out)
