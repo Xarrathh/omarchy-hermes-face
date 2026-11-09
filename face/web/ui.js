@@ -699,19 +699,11 @@
       }
       api().setState(state);
       api().setMood(st.mood || 'neutral');
-      // the webcam tracker (sidecar on :9122): follow the face while it is fresh, fall
-      // back to the face's own saccades when the room is empty or the tracker is down
-      api().setGazeTarget && fetch('http://127.0.0.1:9122/gaze', { cache: 'no-store' })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((gz) => {
-          if (!api().setGazeTarget) return;
-          if (gz && gz.seen && Date.now() / 1000 - (gz.t || 0) < 2.0) {
-            api().setGazeTarget(gz.x, gz.y);
-          } else {
-            api().releaseGaze();
-          }
-        })
-        .catch(() => { if (api().releaseGaze) api().releaseGaze(); });
+      // A webcam gaze sidecar on :9122 used to be polled here. It is not shipped by this
+      // plugin, so on every install it was a cross-origin request to a closed port twice a
+      // second — and it is what the page's Content-Security-Policy (`connect-src 'self'`)
+      // would block. face.js still exposes setGazeTarget()/releaseGaze() for a harness; a
+      // sidecar needs its own opt-in and its own CSP entry rather than a dead fetch.
       document.body.dataset.state = state;
       stateLabel.textContent = LABEL[state] || state;
       // a silent failure is the worst failure here: put it where he is looking

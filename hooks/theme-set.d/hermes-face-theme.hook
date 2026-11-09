@@ -2,7 +2,10 @@
 # Omarchy theme-set hook: pull the face's palette toward the new theme's own colours.
 #
 # It changes the hue family and its saturation, never the geometry, exposure or anything else
-# he has tuned, and `hermes-face-theme-sync off` (or a manual colour edit) switches it off.
+# he has tuned, and `hermes-face-theme-sync off` (or the menu's Theme sync entry) switches it
+# off. A colour edit by hand is *not* an opt-out: the hook nudges the hues again on the next
+# theme change, and he can put his own back afterwards. This file used to carry a dead branch
+# looking for a "manual colour edit" flag that nothing ever wrote.
 #
 # Calibration rules, because the first version rotated the highlight by a blind +60 and landed
 # on red from a blue theme:
@@ -13,15 +16,16 @@
 # "bad calibration" looked like on screen.
 set -u
 
-FACE_DIR="$HOME/.local/share/hermes-face"
+FACE_DIR="${HERMES_FACE_PREFIX:-$HOME/.local/share/hermes-face}"
 OFF_FLAG="$FACE_DIR/theme-sync-off"
+PORT="${HERMES_FACE_PORT:-9120}"
 LOG="$HOME/.cache/hermes-face-bar.log"
 say() { printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG"; }
 
 THEME_NAME="${1:-}"
 [ -n "$THEME_NAME" ] || THEME_NAME=$(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null)
 
-if [ -e "$OFF_FLAG" ] && ! grep -q "manual colour edit" "$OFF_FLAG" 2>/dev/null; then
+if [ -e "$OFF_FLAG" ]; then
   say "theme: sync off, ignored ${THEME_NAME:-unknown}"
   exit 0
 fi
@@ -83,5 +87,5 @@ fi
 say "theme: ${THEME_NAME:-unknown} -> base $HUE/$SAT, highlight $HUE2/$SAT2"
 curl -s --max-time 3 -H 'content-type: application/json' \
   -d "{\"hue\": $HUE, \"sat\": $SAT, \"hue2\": $HUE2, \"sat2\": $SAT2, \"theme_hook\": true}" \
-  http://127.0.0.1:9120/params >/dev/null 2>&1 || \
+  "http://127.0.0.1:$PORT/params" >/dev/null 2>&1 || \
   say "theme: face not reachable, colours not applied"
