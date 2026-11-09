@@ -589,7 +589,13 @@
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text }),
       });
-      if (r.status === 409) heardEl.textContent = 'still thinking — one moment';
+      if (r.status === 409) {
+        // 409 is a refusal too, so it has to leave before the generic branch or the wording
+        // below overwrites this line on the same tick.
+        heardEl.textContent = 'still thinking — one moment';
+        if (!line.value) line.value = text;
+        return;
+      }
       if (!r.ok) {
         // The bridge refuses an over-long turn (413) and a malformed one (400), and before
         // this the words were already cleared from the line and the caption still read

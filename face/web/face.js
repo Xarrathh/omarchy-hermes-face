@@ -1977,6 +1977,9 @@
 
     const drawMs = performance.now() - drawT0;
     S.drawMs = S.drawMs ? S.drawMs * 0.88 + drawMs * 0.12 : drawMs;
+    // A frame that got all the way here did not throw, so the last failure is history -- it
+    // used to stay in __frameErr forever and read as a live fault in debug().
+    if (window.__frameErr) window.__frameErr = null;
 
     // fps
     fpsAcc += dt; fpsN++;
@@ -1989,7 +1992,20 @@
   /* ---------------------------------------------------------------- api */
   function setParams(next) {
     // next is the tuned look; P is that look plus whatever mood is on top, rebuilt here and
-    // every frame so a slider and a mood never fight over the same key
+    // every frame so a slider and a mood never fight over the same key.
+    // A non-finite number is not a look. It reaches the canvas maths and turns one bad value
+    // into a thrown frame: reproduced with NaN/Infinity, which killed the frame inside
+    // drawEars (IndexSizeError: negative ellipse radius) and left the canvas half-painted.
+    // Drop those keys and keep the rest, so a half-written config cannot blank the face.
+    if (next && typeof next === 'object') {
+      const clean = {};
+      for (const k of Object.keys(next)) {
+        const v = next[k];
+        if (typeof v === 'number' && !isFinite(v)) continue;
+        clean[k] = v;
+      }
+      next = clean;
+    }
     BASE = Object.assign({}, BASE, next);
     CELLS.dirty = true;
     P = moodParams();
