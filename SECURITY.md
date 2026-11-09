@@ -52,7 +52,10 @@ carries that mode with it.
 
 Spoken audio is pruned as the face is used: a new turn deletes the `reply-*.mp3` files of older
 turns, and `voice-test-*` leftovers older than a day go too, so his voice does not accumulate in
-the prefix forever.
+the prefix forever. Abandoned `q-*.txt` prompt files — the ones a killed bridge leaves behind —
+age out in the same sweep, and the sweep also runs at boot. The systemd unit sets
+`NoNewPrivileges=yes` and `UMask=0077`, so a file the bridge creates is private at creation
+rather than at the next startup chmod.
 
 Prompt text and reply text are never placed in process arguments. The bridge calls the agent with
 `--query-file`, and a CLI too old for that flag is refused rather than having the spoken words put
@@ -64,8 +67,13 @@ its owner chooses to keep. The CLI speech fallback writes to a private file and 
 The page is served with a strict `Content-Security-Policy` (`default-src 'self'`, no inline
 script, `connect-src 'self'`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`,
 `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`; every response is `Cache-Control:
-no-store`. A `POST` body is capped at 1 MiB and a malformed `Content-Length` is answered with 400
-instead of being read.
+`no-store`. A `POST` body is capped at 1 MiB and a malformed `Content-Length` is answered with 400
+instead of being read; `/say` accepts at most 8000 characters and the voice sampler 400.
+
+`HEAD` is answered like `GET` without a body, so a monitor that probes with `curl -I` sees `200`
+rather than the `501` an unimplemented method returns. `/health` is readiness only (`ok`, `agent`):
+the agent's binary path lives on the authenticated `/state`, not on the one route any local
+account may read.
 
 ## What the automated baseline will flag
 

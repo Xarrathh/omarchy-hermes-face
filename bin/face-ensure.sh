@@ -171,6 +171,11 @@ if use_systemd; then
      && ! grep -q "^Environment=HERMES_BIN=" "$UNIT" 2>/dev/null; then
     NEED_UNIT=1
   fi
+  # A unit written before the hardening pass has neither directive, and the vendor hash does
+  # not move when only the script changed: without this the unit stays unhardened forever.
+  for directive in "NoNewPrivileges=yes" "UMask=0077"; do
+    grep -qx "$directive" "$UNIT" 2>/dev/null || NEED_UNIT=1
+  done
 fi
 
 if healthy && [ "$CHANGED" = "0" ] && [ "$NEED_UNIT" = "0" ]; then
