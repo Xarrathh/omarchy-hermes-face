@@ -31,6 +31,7 @@ from pathlib import Path
 VERSION = "1.2"
 PRESENT_TTL = 8.0          # seconds of beacon silence before a peer is "gone"
 GREET_COOLDOWN = 900.0    # one greeting per peer per 15 minutes
+TURN_RESET = 600.0        # a gap this long starts a fresh conversation, so the cap is not permanent
 BEACON_EVERY = 2.0
 AUDIO_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}\.mp3")
 
@@ -591,11 +592,16 @@ class Handler(BaseHTTPRequestHandler):
             if kind == "greet" or not self.args.auto_reply:
                 return self._json({"ok": True, "reply": "", "audio": ""})
             with LOCK_TURNS:
-                turns = TURNS.get(frm, 0)
-                if turns >= self.args.max_turns:
-                    log(f"turn cap reached for {frm}; not answering")
+                # "per conversation" has to mean a conversation, not the lifetime of the process:
+                # a plain counter capped the peer forever after six answers and looked exactly like
+                # a dead peer. A gap longer than TURN_RESET starts a fresh count.
+                count, last = TURNS.get(frm, (0, 0.0))
+                if time.time() - last > TURN_RESET:
+                    count = 0
+                if count >= self.args.max_turns:
+                    log(f"turn cap reached for {frm} ({count}); not answering")
                     return self._json({"ok": True, "reply": "", "audio": "", "capped": True})
-                TURNS[frm] = turns + 1
+                TURNS[frm] = (count + 1, time.time())
             reply, audio = ask_agent(self.args, frm, text)
             log(f"answered {frm}: {reply[:70]!r} audio={audio or 'none'}")
             return self._json({"ok": True, "reply": reply, "audio": audio})
@@ -603,7 +609,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"error": "not found"}, 404)
 
 
-TURNS: dict[str, int] = {}
+TURNS: dict[str, tuple[int, float]] = {}
 LOCK_TURNS = threading.Lock()
 
 
@@ -661,7 +667,7 @@ def main() -> int:
     ap.add_argument("--config-file", default=None,
                     help="peering.json holding this face's name and aliases (default: beside audio/)")
     ap.add_argument("--auto-reply", action="store_true", help="answer an incoming line with an agent turn")
-    ap.add_argument("--max-turns", type=int, default=6, help="answers per peer before the cap")
+    ap.add_argument("--max-turns", type=int, default=12, help="answers per peer before the cap")
     ap.add_argument("--reply-timeout", type=float, default=60.0)
     args = ap.parse_args()
     if args.beacon_send_port is None:
