@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "pierregoosen.hermes-face",
   "name": "Hermes Face",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "author": "Pierre-Johan Goosen",
   "license": "MIT",
   "description": "What is an AI without a face? This one has it. A holographic head lives on your bar as a single glyph — idle, thinking, speaking or failed — and answers in your own agent's voice. Everything is included: the face ships inside this repository, so one install is the whole thing, with open, stop and restart a click away.",
