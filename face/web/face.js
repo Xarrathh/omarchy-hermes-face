@@ -1993,10 +1993,12 @@
   function setParams(next) {
     // next is the tuned look; P is that look plus whatever mood is on top, rebuilt here and
     // every frame so a slider and a mood never fight over the same key.
-    // A non-finite number is not a look. It reaches the canvas maths and turns one bad value
-    // into a thrown frame: reproduced with NaN/Infinity, which killed the frame inside
-    // drawEars (IndexSizeError: negative ellipse radius) and left the canvas half-painted.
-    // Drop those keys and keep the rest, so a half-written config cannot blank the face.
+    // A non-finite number is not a look. It reaches the canvas maths and abandons the frame,
+    // and *where* it dies depends on which key it was: one bad key (headWidth, smile, jawWidth,
+    // chinWidth...) collapses a canvas and throws InvalidStateError out of drawSculpt's
+    // drawImage, while NaN across every key leaves layout handing back undefined and throws
+    // "Cannot read properties of undefined (reading 'line')" in frame(). Either way the painting
+    // freezes half-done, so the guard belongs at this boundary, not in any one draw function.
     if (next && typeof next === 'object') {
       const clean = {};
       for (const k of Object.keys(next)) {
