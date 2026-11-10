@@ -37,6 +37,33 @@ else
   bad "no venv in the prefix" "run $HERE/bin/face-ensure.sh once, it creates it"
 fi
 
+installed_stamp="$(cat "$PREFIX/.installed-version" 2>/dev/null || true)"
+installed_commit="$(cat "$PREFIX/.installed-commit" 2>/dev/null || true)"
+hash_tree() {  # hash_tree <dir holding server.py + web/>
+  ( cd "$1" && { sha256sum server.py; find web -maxdepth 1 ! -type d -print0 \
+      | sort -z | xargs -0 -r sha256sum; } 2>/dev/null ) | sha256sum | cut -d' ' -f1
+}
+# Three different questions, and the old check answered only the middle one:
+#   stamp    = what ensure last installed here
+#   install  = what is actually on disk now (a hand edit after ensure changes this, not stamp)
+#   vendor   = what this checkout holds
+# Comparing stamp to vendor says "the repo has not moved since the last install" -- true even
+# when the prefix has been edited since, which is the drift that matters on screen.
+installed_hash="$(hash_tree "$PREFIX")"
+vendor="$(hash_tree "$HERE/face")"
+vendor_commit="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [ -z "$installed_stamp" ]; then
+  bad "no install stamp in $PREFIX (version unknown)" "run $HERE/bin/face-ensure.sh once"
+elif [ -n "$installed_hash" ] && [ "$installed_hash" != "$installed_stamp" ]; then
+  bad "installed files were edited after install (disk ${installed_hash:0:8} != stamp ${installed_stamp:0:8})" \
+      "those edits are in no repo: commit them, or run $HERE/bin/face-ensure.sh to discard them"
+elif [ "$installed_stamp" = "$vendor" ]; then
+  pass "installed code matches this checkout (${installed_commit:-unknown} / ${vendor_commit})"
+else
+  bad "installed code is older than this checkout (installed ${installed_commit:-unknown}, repo ${vendor_commit})" \
+      "run $HERE/bin/face-ensure.sh to sync"
+fi
+
 agent=""
 for cand in "$(command -v hermes 2>/dev/null || true)" "$HOME/.local/bin/hermes" \
             "$HOME/.hermes/bin/hermes" "$HOME/.hermes/hermes-agent/.hermes/bin/hermes" \

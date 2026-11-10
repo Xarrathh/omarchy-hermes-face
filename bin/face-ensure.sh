@@ -59,7 +59,11 @@ sync_code() {
     cp -f "$PLUGIN_DIR/face/config.example.json" "$PREFIX/config.json"
   fi
   printf '%s\n' "$VENDOR" > "$STAMP"
-  say "ensure: code updated to $VENDOR"
+  # The content hash answers "is this the same code"; the commit answers "which code is
+  # this", which is the question a human asks when two boxes disagree on screen.
+  git -C "$PLUGIN_DIR" rev-parse --short HEAD > "$PREFIX/.installed-commit" 2>/dev/null \
+    || printf 'unknown\n' > "$PREFIX/.installed-commit"
+  say "ensure: code updated to $VENDOR ($(cat "$PREFIX/.installed-commit" 2>/dev/null))"
   return 0
 }
 
