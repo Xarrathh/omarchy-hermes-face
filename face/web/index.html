@@ -183,7 +183,13 @@
     border-radius: 6px; color: #cfeeff; font: inherit; font-size: 12px; padding: 6px 8px;
   }
   .identity input::placeholder { color: rgba(150, 210, 225, 0.4); }
-  .identity button { padding: 5px 10px; border-radius: 999px; }
+  .identity button {
+    padding: 6px 10px; border-radius: 999px; cursor: pointer;
+    background: rgba(12, 40, 50, 0.6); color: rgba(180, 240, 252, 0.9);
+    border: 1px solid rgba(80, 190, 210, 0.28); font: inherit; font-size: 11px;
+    letter-spacing: 0.06em;
+  }
+  .identity button:hover { border-color: rgba(120, 230, 250, 0.6); color: #d8fbff; }
   .identity button:disabled, .identity input:disabled { opacity: 0.45; }
   #faceNameState { font-size: 10px; letter-spacing: 0.12em; color: rgba(110, 190, 205, 0.6); }
   .presets button, .actions button, #voice {
