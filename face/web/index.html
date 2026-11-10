@@ -154,16 +154,26 @@
     border-left: none; font-size: 12px; line-height: 1; opacity: 0.75;
   }
   .chip .x:hover { opacity: 1; color: #ff9db4; }
-  .savepreset { display: flex; gap: 6px; margin: 2px 0 10px; }
-  .savepreset input {
-    flex: 1; min-width: 0; background: rgba(8, 26, 32, 0.9); color: var(--ink);
-    border: 1px solid var(--line); border-radius: 999px; padding: 5px 10px;
-    font: inherit; font-size: 11px; letter-spacing: 0.04em;
+  .savepreset { display: flex; gap: 6px; margin: 2px 0 10px; align-items: center; }
+  .saveLabel {
+    font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: rgba(150, 215, 230, 0.55); margin: 8px 0 4px;
   }
-  .savepreset input::placeholder { color: rgba(150, 210, 225, 0.4); }
-  .savepreset button { padding: 5px 10px; border-radius: 999px; }
-  .savepreset input, .savepreset button {
-    border: 1px solid var(--line); background: transparent; color: var(--dim);
+  .savepreset input {
+    flex: 1; min-width: 0; background: rgba(11, 38, 47, 0.95); color: #e8feff;
+    border: 1px solid rgba(90, 210, 235, 0.45); border-radius: 999px; padding: 6px 11px;
+    font: inherit; font-size: 11px; letter-spacing: 0.04em; cursor: text;
+  }
+  .savepreset input::placeholder { color: rgba(190, 240, 252, 0.62); }
+  .savepreset input:focus {
+    outline: none; border-color: rgba(150, 245, 255, 0.9); background: rgba(16, 54, 66, 1);
+  }
+  .savepreset button { padding: 6px 11px; border-radius: 999px; }
+  /* buttons only: this rule used to include .savepreset input, and because it comes last
+     it stripped the field's fill and set its text to the dim label colour -- the field was
+     still in the DOM and still focusable, so it read as "the name box is not there". */
+  .savepreset button {
+    border: 1px solid var(--line); background: rgba(12, 40, 50, 0.6); color: rgba(180, 240, 252, 0.9);
     font-size: 11px; letter-spacing: 0.04em; cursor: pointer;
   }
   .savepreset button:hover { border-color: rgba(120, 230, 250, 0.6); color: #d8fbff; }
@@ -256,8 +266,10 @@
     <h1>Face</h1>
     <div class="sub">everything here is saved to config.json</div>
     <div class="presets" id="presets"></div>
+    <div class="saveLabel">save this look as</div>
     <div class="savepreset">
-      <input id="presetName" placeholder="name this look" maxlength="24" spellcheck="false">
+      <input id="presetName" placeholder="preset name" maxlength="24" spellcheck="false"
+             aria-label="Preset name">
       <button id="presetSave" title="Save the current look as a preset">Save current</button>
     </div>
     <div id="paramGroups"></div>
