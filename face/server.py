@@ -29,6 +29,9 @@ WEB = HERE / "web"
 AUDIO = HERE / "audio"
 AUDIO.mkdir(exist_ok=True)
 CONFIG = HERE / "config.json"
+# The face's own name and the words that address it. Lives beside the bridge, not in
+# config.json: it is identity, not look, and the peering sidecar reads the same file.
+PEERING = HERE / "peering.json"
 THEME_SYNC_OFF = HERE / "theme-sync-off"      # flag: his colours beat the theme hook
 TOKEN_FILE = HERE / "token"                   # per-user secret; loopback alone is not isolation
 SCHEMA = WEB / "schema.json"
@@ -1310,6 +1313,15 @@ class Handler(BaseHTTPRequestHandler):
             if len(VOICES) <= len(VOICES_STATIC):
                 refresh_voices()
             return self._json({"voices": VOICES, "current": load_config()["voice"]})
+        if path == "/identity":
+            try:
+                cfg = json.loads(PEERING.read_text(encoding="utf-8"))
+                if not isinstance(cfg, dict):
+                    cfg = {}
+            except (OSError, json.JSONDecodeError):
+                cfg = {}
+            return self._json({"name": cfg.get("name") or "",
+                               "aliases": cfg.get("aliases") or []})
         if path == "/state":
             return self._json(snapshot())
         if path == "/history":
@@ -1401,6 +1413,34 @@ class Handler(BaseHTTPRequestHandler):
             prune_audio(seq)
             threading.Thread(target=run_turn, args=(text, seq), daemon=True).start()
             return self._json({"ok": True, "seq": seq})
+
+        if path == "/identity":
+            # The panel is the place a person looks, so the panel must be able to change it:
+            # a file-only setting is why "where do I put the name" had no answer.
+            name = str(payload.get("name") or "").strip()[:40]
+            aliases = payload.get("aliases")
+            if not name:
+                return self._json({"error": "name required"}, 400)
+            cfg = {}
+            try:
+                cfg = json.loads(PEERING.read_text(encoding="utf-8"))
+                if not isinstance(cfg, dict):
+                    cfg = {}
+            except (OSError, json.JSONDecodeError):
+                cfg = {}
+            cfg["name"] = name
+            if isinstance(aliases, list):
+                cfg["aliases"] = [str(a).strip()[:40] for a in aliases if str(a).strip()][:12]
+            elif isinstance(aliases, str):
+                cfg["aliases"] = [a.strip()[:40] for a in aliases.split(",") if a.strip()][:12]
+            cfg.setdefault("aliases", [name.lower()])
+            tmp = HERE / ".peering.tmp"
+            try:
+                tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                os.replace(tmp, PEERING)
+            except OSError as exc:
+                return self._json({"error": f"cannot write peering.json: {exc}"}, 500)
+            return self._json({"ok": True, "name": cfg["name"], "aliases": cfg["aliases"]})
 
         if path == "/history/clear":
             with HIST_LOCK:

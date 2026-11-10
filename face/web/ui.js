@@ -78,7 +78,60 @@
     return Number(v).toFixed(dec);
   }
 
+  // The name field is the one control on this panel that is not a look parameter: it writes
+  // peering.json through /identity. Wired here, inside buildEditor, because the panel is
+  // built after the schema fetch and a load-time binding would find no element.
+  async function wireIdentity() {
+    const nameEl = $('#faceName'), aliasEl = $('#faceAliases');
+    const btn = $('#faceNameSave'), st = $('#faceNameState');
+    if (!nameEl || !btn || nameEl.dataset.wired) return;
+    nameEl.dataset.wired = '1';
+
+    const read = async () => {
+      const r = await fetch('/identity', { cache: 'no-store' });
+      if (!r.ok) throw new Error(String(r.status));
+      return r.json();
+    };
+    try {
+      const j = await read();
+      nameEl.value = j.name || '';
+      aliasEl.value = (j.aliases || []).join(', ');
+      st.textContent = j.name ? 'named' : 'unnamed';
+    } catch {
+      // an older bridge has no /identity: say so instead of offering a control that cannot work
+      st.textContent = 'this bridge has no identity route';
+      nameEl.disabled = aliasEl.disabled = btn.disabled = true;
+      return;
+    }
+    const save = async () => {
+      const name = nameEl.value.trim();
+      if (!name) { nameEl.focus(); return; }
+      st.textContent = 'saving…';
+      try {
+        const r = await fetch('/identity', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            aliases: aliasEl.value.split(',').map(a => a.trim()).filter(Boolean),
+          }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || String(r.status));
+        aliasEl.value = (j.aliases || []).join(', ');
+        st.textContent = 'saved';
+      } catch (e) {
+        st.textContent = 'not saved: ' + e.message;
+      }
+    };
+    btn.addEventListener('click', save);
+    [nameEl, aliasEl].forEach(el => el.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); save(); }
+    }));
+  }
+
   async function buildEditor() {
+    wireIdentity();
     const host = $('#paramGroups');
     host.innerHTML = '';
     // Ten headings and sixty sliders is a wall; each group is a <details> now, so the
