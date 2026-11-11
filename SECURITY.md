@@ -89,7 +89,7 @@ Declared in advance, so these are expected rather than surprising:
 
 ### The LAN listener
 
-`face/peer.py` is opt-in (`bin/face-peer-enable.sh`) and binds TCP 9910 plus a UDP beacon. Every
+`face/face_peer.py` is opt-in (`bin/face-peer-enable.sh`) and binds TCP 9910 plus a UDP beacon. Every
 peer endpoint requires the shared key from `~/.local/share/hermes-face/peer.key` (`0600`), compared
 in constant time; only `/health` answers unauthenticated, and it reveals nothing but an id and a
 version. Requests from loopback are trusted by address, the same way the local bridge is. Outbound

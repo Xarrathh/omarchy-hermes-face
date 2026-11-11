@@ -15,6 +15,7 @@ answered with another greeting.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -30,6 +31,11 @@ from pathlib import Path
 
 VERSION = "1.2"
 PRESENT_TTL = 8.0          # seconds of beacon silence before a peer is "gone"
+
+try:
+    BUILD = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+except OSError:
+    BUILD = "unknown"
 GREET_COOLDOWN = 900.0    # one greeting per peer per 15 minutes
 BEACON_EVERY = 2.0
 AUDIO_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}\.mp3")
@@ -78,7 +84,7 @@ class Book:
         with self.lock:
             p = self.peers.get(pid) or {"greeted": 0.0, "present": False}
             was = bool(p.get("present"))
-            for k in ("name", "port", "face", "ip", "aliases"):
+            for k in ("name", "port", "face", "ip", "aliases", "build"):
                 if info.get(k) is not None:
                     p[k] = info[k]
             p["last"] = time.time()
@@ -115,7 +121,28 @@ class Book:
 
 
 # ------------------------------------------------------------------ face calls
-def face_call(args: argparse.Namespace, path: str, payload: dict, timeout: float = 40.0) -> dict:
+def why_failed(exc: BaseException) -> str:
+    """Say which failure this is, because 'unreachable' and 'busy' send you to different places.
+
+    A 40 s client timeout on a handoff to a live turn is not a network fault: the bridge is
+    working and busy. Calling both of them 'unreachable' is how a queue looked like a dead box
+    for an afternoon.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return "busy" if exc.code in (409, 429, 503) else f"http {exc.code}"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "busy"
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return "busy"
+        return "unreachable"
+    if isinstance(exc, (ConnectionError, OSError)):
+        return "unreachable"
+    return "error"
+
+
+def face_call(args: argparse.Namespace, path: str, payload: dict, timeout: float = 180.0) -> dict:
     req = urllib.request.Request(
         args.face_url.rstrip("/") + path,
         data=json.dumps(payload).encode(),
@@ -169,10 +196,56 @@ def speak_local(args: argparse.Namespace, text: str, frm: str) -> str:
         return ""
 
 
-def ask_agent(args: argparse.Namespace, peer_name: str, text: str) -> tuple[str, str]:
-    """Run a real agent turn so the answer is this face's own, then read it and its audio back."""
+def echo_score(reply: str, said: str) -> float:
+    """How much of one text is made of the other, in whichever direction is fuller."""
+    a = {w for w in re.findall(r"[a-z0-9']{3,}", reply.lower())}
+    b = {w for w in re.findall(r"[a-z0-9']{3,}", said.lower())}
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    return max(inter / len(a), inter / len(b))
+
+
+def echoes_input(reply: str, said: str) -> bool:
+    """True when the answer is really the question coming back.
+
+    A model asked to "reply to them" will sometimes restate what it was told, and on the wire that
+    is indistinguishable from an echo: the other face hears its own sentence in a new voice. Word
+    overlap is a cheap, explainable test — a genuine counter-argument shares the topic words but
+    adds a claim, so the two sets rarely coincide.
+    """
+    a = {w for w in re.findall(r"[a-z0-9']{3,}", reply.lower())}
+    b = {w for w in re.findall(r"[a-z0-9']{3,}", said.lower())}
+    if not a or not b:
+        return False
+    # Containment in whichever direction is fuller, not Jaccard: an echo is "most of one text is
+    # made of the other", and Jaccard dilutes that with every extra word. Measured on real output
+    # -- verbatim 1.00, paraphrase 0.92, a one-line summary of the input 0.80, a blunt counterpoint
+    # that reuses the topic 0.67, a genuine rebuttal 0.00. Jaccard scored the paraphrase 0.79, i.e.
+    # under a 0.8 cut, so the guard would have passed the answer it exists to refuse.
+    inter = len(a & b)
+    return max(inter / len(a), inter / len(b)) >= 0.75
+
+
+def ask_agent(args: argparse.Namespace, peer_name: str, text: str) -> tuple[str, str, str]:
+    """Run a turn on this face and return (text, audio_name).
+
+    A speech failure is NOT an answer failure: the bridge sets `error` when edge-tts drops the
+    audio, and the words are already in `reply`. Refusing the text because the voice hiccuped is
+    how a debate round died with a 200 and an empty string -- the most useless possible answer.
+    """
+    # A face echoes the wrapper it was given, so forwarding that echo nests it once per round:
+    # "(another Hermes face on this LAN) said: (another ... said: ...". The history panel showed
+    # four levels of it, and every level makes the prompt longer and the turn slower.
+    while True:
+        stripped = re.sub(r"^\s*\(?another Hermes face on this LAN\)?\s*said:\s*", "", text, flags=re.I)
+        if stripped == text:
+            break
+        text = stripped
     prompt = (f"{peer_name} (another Hermes face on this LAN) said: {text}\n"
-              "Reply to them in one short spoken sentence, no markdown.")
+              "Answer them in one short spoken sentence, in your own words. Do not repeat or "
+              "paraphrase what they said; state your own position and one reason for it, and "
+              "no markdown.")
     # Whatever the face spoke before this call is not this turn's answer. Handing that name
     # back relays a stale clip, and the listener hears the previous line again in the voice of
     # whoever said it last -- which reads as an echo.
@@ -184,12 +257,17 @@ def ask_agent(args: argparse.Namespace, peer_name: str, text: str) -> tuple[str,
     except Exception:                              # noqa: BLE001
         pass
     try:
-        face_call(args, "/say", {"text": prompt, "origin": "peer"})
+        # 180 s, the same floor the peer calls use: /say now waits for the live turn instead of
+        # killing it, so a handoff during a real turn legitimately takes tens of seconds. At 40 s
+        # this timed out client-side and reported the bridge as unreachable.
+        face_call(args, "/say", {"text": prompt, "origin": "peer"}, timeout=max(180.0, args.reply_timeout + 60))
     except Exception as exc:                       # noqa: BLE001
-        log(f"agent turn failed to start: {exc}")
-        return "", ""
+        why = why_failed(exc)
+        log(f"agent turn failed to start ({why}): {exc}")
+        return "", "", why
     deadline = time.time() + args.reply_timeout
     last_name = ""
+    last_state: dict = {}
     while time.time() < deadline:
         time.sleep(0.5)
         try:
@@ -205,13 +283,18 @@ def ask_agent(args: argparse.Namespace, peer_name: str, text: str) -> tuple[str,
         elif st.get("audio") and str(st["audio"]) != before:
             last_name = str(st["audio"]).rsplit("/", 1)[-1]
         if st.get("error"):
-            # A failed turn writes its complaint into `reply`, and speaking it aloud turns a
-            # broken bridge into the face answering with an error message. Nothing is relayed.
-            log(f"turn error on this side: {st['error'][:140]}")
-            return "", ""
+            said = str(st.get("reply") or "").strip()
+            log(f"turn error on this side: {st['error'][:140]} | reply_text={said[:60]!r}")
+            if said and not said.startswith("The agent did not return"):
+                # Keep the words, drop the audio: the other face can still argue.
+                return said, "", "ok-no-audio"
+            return "", "", "error"
+        last_state = st
         if st.get("agent") == "idle" and (st.get("reply") or "").strip():
-            return str(st["reply"]).strip(), last_name
-    return "", ""
+            return str(st["reply"]).strip(), last_name, "ok"
+    log(f"no answer from this face in {args.reply_timeout:.0f}s: agent={last_state.get('agent')!r} "
+        f"error={str(last_state.get('error'))[:80]!r} reply_len={len(str(last_state.get('reply') or ''))}")
+    return "", "", "timeout"
 
 
 # ------------------------------------------------------------------ transport
@@ -237,6 +320,97 @@ def peer_url(p: dict, path: str) -> str:
 
 
 # ------------------------------------------------------------------ addressing
+def load_policy(args: argparse.Namespace) -> dict:
+    """How this face treats other faces on the LAN.
+
+    Default is automatic: a face that appears is greeted, recorded and answered, because that is
+    the whole point of two faces meeting. The list exists to improve security when someone wants
+    it -- `blocked` refuses a face outright, `strict` refuses anything not in `trusted`, and
+    `require_key` brings back the shared-secret gate. `seen` is written automatically so the list
+    shows who has been here without anyone configuring anything.
+    """
+    path = Path(args.config_file) if args.config_file else Path(args.audio_dir).parent / "peering.json"
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"blocked": [], "trusted": [], "strict": False, "require_key": False, "seen": []}
+    def ids(key):
+        v = cfg.get(key)
+        return [str(x).strip()[:64] for x in v if str(x).strip()] if isinstance(v, list) else []
+    return {"blocked": ids("blocked"), "trusted": ids("trusted"),
+            "strict": bool(cfg.get("strict")), "require_key": bool(cfg.get("require_key")),
+            "seen": ids("seen")}
+
+
+def record_seen(args: argparse.Namespace, peer_id: str, name: str) -> None:
+    """Remember a face at first contact. Costs nothing, and makes the list worth reading."""
+    path = Path(args.config_file) if args.config_file else Path(args.audio_dir).parent / "peering.json"
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            cfg = {}
+    except (OSError, json.JSONDecodeError):
+        cfg = {}
+    seen = cfg.get("seen")
+    if not isinstance(seen, list):
+        seen = []
+    stamp = f"{peer_id}|{name}|{time.strftime('%Y-%m-%d %H:%M')}"
+    if not any(str(s).split("|")[0] == peer_id for s in seen):
+        seen.append(stamp)
+        cfg["seen"] = seen[-40:]
+        try:
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as exc:
+            log(f"could not record {peer_id}: {exc}")
+
+
+def load_trusted(args: argparse.Namespace) -> list[str]:
+    """Face ids allowed to drive this one. "*" means every face that has the key.
+
+    The shared key says "same installation"; this list says "this specific face may talk to me".
+    A laptop with the key but an id nobody approved gets discovery and nothing else.
+    """
+    path = Path(args.config_file) if args.config_file else Path(args.audio_dir).parent / "peering.json"
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    trusted = cfg.get("trusted")
+    if not isinstance(trusted, list):
+        return []
+    return [str(x).strip()[:64] for x in trusted if str(x).strip()]
+
+
+def _save_policy(args: argparse.Namespace, changes: dict) -> None:
+    path = Path(args.config_file) if args.config_file else Path(args.audio_dir).parent / "peering.json"
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            cfg = {}
+    except (OSError, json.JSONDecodeError):
+        cfg = {}
+    cfg.update(changes)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def save_trusted(args: argparse.Namespace, ids: list[str]) -> None:
+    path = Path(args.config_file) if args.config_file else Path(args.audio_dir).parent / "peering.json"
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            cfg = {}
+    except (OSError, json.JSONDecodeError):
+        cfg = {}
+    cfg["trusted"] = ids
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def load_identity(args: argparse.Namespace) -> tuple[str, list[str]]:
     """This face's spoken name and the extra words that address it, from peering.json.
 
@@ -260,7 +434,21 @@ def load_identity(args: argparse.Namespace) -> tuple[str, list[str]]:
     return name, aliases
 
 
-ADDRESS_VERBS = ("ask", "tell", "say to", "speak to", "vra", "sê vir", "se vir")
+ADDRESS_VERBS = ("ask", "tell", "say to", "speak to", "vra", "sê vir", "se vir",
+                 "argue with", "debate with", "discuss with", "dispute with", "stry met")
+DEBATE_VERBS = ("argue with", "debate", "debate with", "discuss with", "dispute", "stry met")
+
+
+def debate_rounds(text: str, name: str) -> int:
+    """How many rounds a sentence asks for: "argue with Suzie about X" is a debate, not a question.
+
+    Three rounds is the smallest number that lets a position be answered and then answered back,
+    which is what "argue" means to a person. Anything else stays a single exchange.
+    """
+    low = text.lower()
+    if not any(v in low for v in DEBATE_VERBS):
+        return 1
+    return 3 if name.lower() in low else 1
 
 
 def route_target(text: str, peers: list[dict], me: list[str]) -> tuple[dict | None, str]:
@@ -300,7 +488,20 @@ def route_target(text: str, peers: list[dict], me: list[str]) -> tuple[dict | No
     if not candidates:
         return None, ""
     candidates.sort(key=lambda c: -c[0])
-    return candidates[0][1], candidates[0][2]
+    # "argue with Suzie about X" leaves "about X": the preposition belongs to the verb, not to
+    # the sentence the other face will hear.
+    return candidates[0][1], re.sub(r"^(about|oor|regarding|on)\s+", "", candidates[0][2], flags=re.I)
+
+
+def local_talk(args: argparse.Namespace, to_name: str, text: str, rounds: int) -> None:
+    """Drive this face's own /talk so a debate started by name speaks its own rounds here."""
+    try:
+        post_json(f"http://127.0.0.1:{args.port}/talk",
+                  {"to": to_name, "text": text[:600], "rounds": rounds},
+                  timeout=args.reply_timeout * rounds + 60)
+    except Exception as exc:                       # noqa: BLE001
+        log(f"local debate failed: {exc}")
+        speak_local(args, f"{to_name or 'The other face'} did not answer.", "peer")
 
 
 def http_post_json_async(url: str, payload: dict, timeout: float = 120.0) -> None:
@@ -350,7 +551,7 @@ def beacon_loop(args: argparse.Namespace, stop: threading.Event) -> None:
         name, aliases = load_identity(args)
         body = json.dumps({"v": VERSION, "id": args.id, "name": name,
                            "port": args.port, "face": "hermes-face",
-                           "aliases": aliases[:8]}).encode()
+                           "aliases": aliases[:8], "build": BUILD}).encode()
         try:
             sock.sendto(body, (args.beacon_send, args.beacon_send_port))
         except OSError as exc:
@@ -388,7 +589,18 @@ def listen_loop(args: argparse.Namespace, book: Book, stop: threading.Event) -> 
         info["ip"] = addr[0]
         fresh, peer = book.seen(pid, info)
         if fresh:
-            log(f"peer present: {peer.get('name')} at {addr[0]}:{peer.get('port')}")
+            log(f"peer present: {peer.get('name')} at {addr[0]}:{peer.get('port')} build={peer.get('build') or '?'}")
+            build = peer.get("build")
+            if build != BUILD:
+                # An absent build is not a pass: a sidecar older than the beacon advertises
+                # nothing, and the old `if peer.get("build") and ...` let exactly that peer skip
+                # the check in silence. Warn for both, and say which kind of doubt it is.
+                if not build:
+                    log(f"BUILD UNVERIFIED: {peer.get('name')} advertises no build, this face runs {BUILD}"
+                        " -- its sidecar predates the build beacon, so a test between them proves nothing")
+                else:
+                    log(f"BUILD MISMATCH: {peer.get('name')} runs {build}, this face runs {BUILD}"
+                        " -- one of them is stale, and a test between mismatched builds proves nothing")
             threading.Thread(target=greet, args=(book, args, pid, peer), daemon=True).start()
     sock.close()
 
@@ -424,6 +636,10 @@ class Handler(BaseHTTPRequestHandler):
     args: argparse.Namespace
     book: Book
 
+    # Routes that may drive this face: every one of them is gated by the key off loopback, and
+    # by the trust list as well. /trust itself is loopback-only and deliberately not here.
+    PEER_ROUTES = ("/talk", "/ask", "/route", "/peer/incoming", "/speak")
+
     def log_message(self, fmt: str, *a) -> None:
         log("http " + fmt % a)
 
@@ -435,23 +651,31 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _authorised(self) -> bool:
-        """Is this request carrying the LAN peer key?
-
-        The listener is on the network, not on loopback: without this, anyone on the LAN could make
-        the face speak, or spend its agent turns through /ask. A request from this machine's own
-        user is trusted the same way the bridge trusts it — by the socket, not by a secret.
-        """
-        import hmac as _hmac
-        if not PEER_KEY:
-            return False
-        given = self.headers.get("X-Peer-Key", "")
-        if given and _hmac.compare_digest(given, PEER_KEY):
-            return True
+    def _loopback(self) -> bool:
         try:
             return self.client_address[0] in ("127.0.0.1", "::1")
         except (IndexError, TypeError):
             return False
+
+    def _authorised(self) -> bool:
+        """May this caller reach the peer API at all?
+
+        Default is automatic: a face on the same network is answered, because two faces meeting
+        without being configured is the feature. The shared key is still honoured when a box sets
+        `"require_key": true` in peering.json -- and then it is mandatory -- but it is no longer
+        the price of admission for everyone else. The greeting is the announcement, and
+        `face-trust.sh block <name>` is the refusal.
+        """
+        import hmac as _hmac
+        if self._loopback():
+            return True
+        policy = load_policy(self.args)
+        if not policy["require_key"]:
+            return True
+        if not PEER_KEY:
+            return False                      # require_key with no key file: refuse, and say why
+        given = self.headers.get("X-Peer-Key", "")
+        return bool(given) and _hmac.compare_digest(given, PEER_KEY)
 
     def _body(self) -> dict:
         try:
@@ -470,7 +694,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorised():
             return self._json({"error": "peer key required"}, 403)
         if path == "/health":
-            return self._json({"ok": True, "who": self.args.id, "version": VERSION})
+            return self._json({"ok": True, "who": self.args.id, "version": VERSION,
+                               "build": BUILD})
         if path == "/transcript":
             # The exchange as text, newest last, so a person can watch the two faces talk.
             if not self._authorised():
@@ -494,8 +719,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "peer key required"}, 403)
             name, aliases = load_identity(self.args)      # a panel rename must show here
             self.args.name, self.args.aliases = name, aliases
-            return self._json({"me": {"id": self.args.id, "name": name},
-                               "peers": self.book.snapshot()})
+            policy = load_policy(self.args)
+            mode = ("key required" if policy["require_key"] else
+                    "strict" if policy["strict"] else "automatic")
+            peers = []
+            for p in self.book.snapshot():
+                p["trusted"] = (not policy["strict"]) or ("*" in policy["trusted"]) \
+                    or p.get("id") in policy["trusted"]
+                p["blocked"] = p.get("id") in policy["blocked"]
+                peers.append(p)
+            return self._json({"me": {"id": self.args.id, "name": name}, "mode": mode,
+                               "trusted": policy["trusted"], "blocked": policy["blocked"],
+                               "seen": policy["seen"], "peers": peers})
         if path.startswith("/audio/"):
             name = urllib.parse.unquote(path[len("/audio/"):])
             if not AUDIO_NAME.fullmatch(name):
@@ -517,6 +752,54 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorised():
             return self._json({"error": "peer key required"}, 403)
         body = self._body()
+        # Holding the key is not the same as being welcome. Anything arriving off loopback must
+        # come from an id this face has been told to accept -- one rogue laptop with the cluster
+        # key should not be able to drive a tool-enabled agent.
+        if not self._loopback() and path in self.PEER_ROUTES:
+            who = str(body.get("id") or "").strip()[:64]
+            who_name = str(body.get("from") or "")[:60]
+            policy = load_policy(self.args)
+            if who and who in policy["blocked"]:
+                log(f"refused {who} at {self.client_address[0]}: blocked")
+                return self._json({"error": "face blocked", "id": who}, 403)
+            if policy["strict"] and "*" not in policy["trusted"] and who not in policy["trusted"]:
+                log(f"refused {who or 'an unidentified caller'}: strict mode, not in the list")
+                return self._json({"error": "face not trusted (strict)",
+                                   "hint": "face-trust.sh allow <name>", "id": who}, 403)
+            if who:
+                record_seen(self.args, who, who_name)
+
+        if path == "/trust":
+            if not self._loopback():
+                return self._json({"error": "trust can only be changed on this machine"}, 403)
+            target = str(body.get("id") or body.get("name") or "").strip()[:64]
+            if not target:
+                return self._json({"error": "id or name required"}, 400)
+            if target != "*":
+                pid, peer = self.book.resolve(target)
+                target = (pid or target)
+            if body.get("block"):
+                policy = load_policy(self.args)
+                blocked = [x for x in policy["blocked"] if x != target]
+                if target not in blocked:
+                    blocked.append(target)
+                ids = [x for x in policy["trusted"] if x != target]
+                _save_policy(self.args, {"blocked": blocked, "trusted": ids})
+                log(f"blocked now: {blocked}")
+                return self._json({"ok": True, "blocked": blocked, "trusted": ids})
+            ids = [x for x in load_trusted(self.args) if x != "*"]
+            policy = load_policy(self.args)
+            if body.get("allow", True):
+                if target not in ids:
+                    ids.append(target)
+                # allowing must also lift a block, or the list contradicts itself
+                blocked = [x for x in policy["blocked"] if x != target]
+                _save_policy(self.args, {"blocked": blocked})
+            else:
+                ids = [x for x in ids if x != target]
+            save_trusted(self.args, ids)
+            log(f"trust list now: {ids or 'empty'}")
+            return self._json({"ok": True, "trusted": ids})
 
         if path == "/speak":
             text = str(body.get("text") or "").strip()
@@ -543,13 +826,46 @@ class Handler(BaseHTTPRequestHandler):
                 answer = post_json(peer_url(peer, "/peer/incoming"),
                                    {"from": self.args.name, "id": self.args.id,
                                     "text": text[:600], "kind": body.get("kind") or "talk"},
-                                   timeout=self.args.reply_timeout + 20)
+                                   timeout=max(180.0, self.args.reply_timeout + 60))
             except Exception as exc:               # noqa: BLE001
                 return self._json({"error": f"peer unreachable: {exc}"}, 502)
             reply = str(answer.get("reply") or "")
             relayed = relay_audio(self.args, peer, str(answer.get("audio") or "")) if self.args.relay else False
-            return self._json({"ok": True, "peer": peer.get("name"), "reply": reply,
-                               "relayed_audio": relayed})
+            lines = [{"who": self.args.name, "text": text[:600]},
+                     {"who": peer.get("name") or "peer", "text": reply}]
+            # `rounds` turns one question into an exchange: each face argues in its own voice, on
+            # its own box, and nothing is replayed here. Capped, because every round is two real
+            # agent turns and a person is listening.
+            rounds = max(1, min(int(body.get("rounds") or 1), 4))
+            stopped = "" if len(lines) > 1 else "peer empty"
+            for _ in range(rounds - 1):
+                if not reply:
+                    stopped = "peer empty"
+                    break
+                mine, _audio, why = ask_agent(self.args, peer.get("name") or "peer", reply)
+                if not mine:
+                    stopped = f"this face: {why}"
+                    break
+                lines.append({"who": self.args.name, "text": mine})
+                try:
+                    answer = post_json(peer_url(peer, "/peer/incoming"),
+                                       {"from": self.args.name, "id": self.args.id,
+                                        "text": mine[:600], "kind": "talk"},
+                                       timeout=max(180.0, self.args.reply_timeout + 60))
+                except Exception as exc:               # noqa: BLE001
+                    log(f"debate round failed at {peer.get('name')}: {exc}")
+                    stopped = f"peer unreachable: {exc}"
+                    break
+                reply = str(answer.get("reply") or "")
+                if not reply:
+                    stopped = f"peer empty ({answer.get('reason') or 'no reason given'})"
+                    break
+                lines.append({"who": peer.get("name") or "peer", "text": reply})
+            # A partial debate must never look like a completed one.
+            return self._json({"ok": not stopped,
+                               "peer": peer.get("name"), "reply": reply,
+                               "relayed_audio": relayed, "rounds": rounds, "lines": lines,
+                               "asked": rounds * 2 - 1, "stopped": stopped})
 
         if path == "/route":
             # Addressed by name: this face says the question aloud in its own voice, then the
@@ -563,11 +879,22 @@ class Handler(BaseHTTPRequestHandler):
             peer, rest = route_target(text, self.book.snapshot(), aliases)
             if not peer:
                 return self._json({"handled": False})
+            rounds = debate_rounds(text, peer.get("name") or "")
+            if rounds > 1:
+                # A debate needs this face to speak its own rounds, so it cannot be a one-way
+                # delegation: run a local multi-round /talk instead of /peer/incoming.
+                log(f"debate with {peer.get('name')} over {rounds} rounds: {rest[:60]!r}")
+                threading.Thread(target=local_talk,
+                                 args=(self.args, peer.get("name") or "", rest, rounds),
+                                 daemon=True).start()
+                return self._json({"handled": True, "peer": peer.get("name"),
+                                   "ack": f"Arguing with {peer.get('name')}.",
+                                   "rounds": rounds, "text": rest[:600]})
             log(f"routing to {peer.get('name')}: {rest[:70]!r}")
             http_post_json_async(peer_url(peer, "/peer/incoming"),
                                  {"from": self.args.name, "id": self.args.id,
                                   "text": rest[:600], "kind": "route"},
-                                 timeout=self.args.reply_timeout + 20)
+                                 timeout=max(180.0, self.args.reply_timeout + 60))
             return self._json({"handled": True, "peer": peer.get("name"),
                                "ack": f"Asking {peer.get('name')}.",
                                "text": rest[:600]})
@@ -587,7 +914,7 @@ class Handler(BaseHTTPRequestHandler):
                 answer = post_json(peer_url(peer, "/peer/incoming"),
                                    {"from": self.args.name, "id": self.args.id,
                                     "text": text[:600], "kind": "talk"},
-                                   timeout=self.args.reply_timeout + 20)
+                                   timeout=max(180.0, self.args.reply_timeout + 60))
             except Exception as exc:               # noqa: BLE001
                 return self._json({"error": f"peer unreachable: {exc}"}, 502)
             reply = str(answer.get("reply") or "")
@@ -618,14 +945,47 @@ class Handler(BaseHTTPRequestHandler):
                     log(f"turn cap reached for {frm}; not answering")
                     return self._json({"ok": True, "reply": "", "audio": "", "capped": True})
                 TURNS[who] = (turns + 1, now)
-            reply, audio = ask_agent(self.args, frm, text)
+            # One turn at a time per peer, and a second caller waits rather than losing its line.
+            # A global lock would have made one face's turn block every other face; a silent
+            # refusal would look like the peer ignoring the question.
+            lock = peer_lock(who or frm)
+            if not lock.acquire(timeout=150):
+                log(f"busy 150s: {frm} still asking; refusing rather than queueing forever")
+                return self._json({"ok": False, "reply": "", "audio": "", "reason": "busy"}, 409)
+            try:
+                reply, audio, why = ask_agent(self.args, frm, text)
+            finally:
+                lock.release()
+            # Log the number, not a verdict: tomorrow's third-voice test should yield a
+            # distribution of real scores rather than "it felt like an echo".
+            log(f"echo score vs {frm}: {echo_score(reply, text):.2f} (cut 0.75)")
+            if reply and echoes_input(reply, text):
+                log(f"{frm} got an echo back ({reply[:50]!r}); asking once more")
+                reply, audio, _why = ask_agent(self.args, frm,
+                                          text + "\n(Do not repeat my words. Say what you think.)")
+                if reply and echoes_input(reply, text):
+                    log("still an echo; refusing to return it")
+                    reply, audio = "", ""
             log(f"answered {frm}: {reply[:70]!r} audio={audio or 'none'}")
-            return self._json({"ok": True, "reply": reply, "audio": audio})
+            return self._json({"ok": True, "reply": reply, "audio": audio, "reason": why})
 
         return self._json({"error": "not found"}, 404)
 
 
 TURNS: dict[str, tuple[int, float]] = {}
+PEER_BUSY = threading.Lock()      # one peer turn at a time: a second caller gets 409, not silence
+PEER_LOCKS: dict[str, threading.Lock] = {}
+PEER_LOCKS_GUARD = threading.Lock()
+
+
+def peer_lock(pid: str) -> threading.Lock:
+    """One turn at a time per peer. Two callers used to interleave rounds and lose lines."""
+    with PEER_LOCKS_GUARD:
+        lock = PEER_LOCKS.get(pid)
+        if lock is None:
+            lock = threading.Lock()
+            PEER_LOCKS[pid] = lock
+        return lock
 TURN_WINDOW = 300.0        # silence that ends a conversation
 LOCK_TURNS = threading.Lock()
 
@@ -684,8 +1044,12 @@ def main() -> int:
     ap.add_argument("--config-file", default=None,
                     help="peering.json holding this face's name and aliases (default: beside audio/)")
     ap.add_argument("--auto-reply", action="store_true", help="answer an incoming line with an agent turn")
-    ap.add_argument("--max-turns", type=int, default=12, help="answers per peer before the cap")
-    ap.add_argument("--reply-timeout", type=float, default=60.0)
+    ap.add_argument("--max-turns", type=int, default=12,
+                    help="answers per peer per conversation window; a 3-round debate spends 3, "
+                         "so 6 let two debates inside one window hit the cap")
+    ap.add_argument("--reply-timeout", type=float, default=120.0,
+                    help="seconds to wait for a peer turn; measured best case was 57 s "
+                         "for a one-word answer, so 120 is the floor, not a luxury")
     args = ap.parse_args()
     if args.beacon_send_port is None:
         args.beacon_send_port = args.beacon_port
