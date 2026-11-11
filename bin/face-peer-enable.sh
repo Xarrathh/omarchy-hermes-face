@@ -53,8 +53,9 @@ After=hermes-face.service
 [Service]
 Type=simple
 WorkingDirectory=$PREFIX
-ExecStart=$PY $PREFIX/face_peer.py --name $NAME --id $ID --port $PEER_PORT \\
-  --face-url http://127.0.0.1:$PORT --token-file $PREFIX/token --key-file $PREFIX/peer.key --relay
+ExecStart=$PY $PREFIX/face_peer.py --name $NAME --id $ID --port $PEER_PORT \
+  --face-url http://127.0.0.1:$PORT --token-file $PREFIX/token --key-file $PREFIX/peer.key --relay \
+  --auto-reply
 Environment=PYTHONUNBUFFERED=1
 Restart=always
 RestartSec=3
