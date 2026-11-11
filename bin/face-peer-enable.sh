@@ -117,14 +117,23 @@ if [ "${1:-}" = "--firewall" ]; then
   applied=0
   why="no supported firewall is running (ufw, firewalld, or an inet filter table)"
   if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
-    as_root ufw allow from "$SUBNET" to any port "$PEER_PORT" proto tcp comment 'hermes face peer' >/dev/null 2>&1 && applied=1
-    as_root ufw allow from "$SUBNET" to any port 9910 proto udp comment 'hermes face beacon' >/dev/null 2>&1 || true
-    [ "$applied" = "1" ] || why="the ufw rules were refused, or pkexec did not finish within ${POLKIT_TIMEOUT}s"
+    # Gate every follow-up rule on the first one landing: each privileged call costs up to a full
+    # POLKIT_TIMEOUT when nobody is at the desk to approve it, and an unattended box must not pay
+    # that twice (or three times) to learn the same "no". Measured: 2x20s before this gate.
+    if as_root ufw allow from "$SUBNET" to any port "$PEER_PORT" proto tcp comment 'hermes face peer' >/dev/null 2>&1; then
+      applied=1
+      as_root ufw allow from "$SUBNET" to any port 9910 proto udp comment 'hermes face beacon' >/dev/null 2>&1 || true
+    else
+      why="the ufw rule was refused, or pkexec did not finish within ${POLKIT_TIMEOUT}s"
+    fi
   elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active firewalld >/dev/null 2>&1; then
-    as_root firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=$SUBNET port port=$PEER_PORT protocol=tcp accept" >/dev/null 2>&1 && applied=1
-    as_root firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=$SUBNET port port=9910 protocol=udp accept" >/dev/null 2>&1 || true
-    as_root firewall-cmd --reload >/dev/null 2>&1 || true
-    [ "$applied" = "1" ] || why="the firewalld rule was refused, or pkexec did not finish within ${POLKIT_TIMEOUT}s"
+    if as_root firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=$SUBNET port port=$PEER_PORT protocol=tcp accept" >/dev/null 2>&1; then
+      applied=1
+      as_root firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=$SUBNET port port=9910 protocol=udp accept" >/dev/null 2>&1 || true
+      as_root firewall-cmd --reload >/dev/null 2>&1 || true
+    else
+      why="the firewalld rule was refused, or pkexec did not finish within ${POLKIT_TIMEOUT}s"
+    fi
   elif as_root nft -f "$NUGGET" 2>/dev/null; then
     applied=1
   else
