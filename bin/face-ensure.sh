@@ -23,7 +23,7 @@ UNIT="$HOME/.config/systemd/user/$UNIT_NAME"
 # The log is a convenience, never a precondition: a read-only $HOME, a missing ~/.cache or a full
 # disk must not turn a successful install into "the bridge did not answer". mkdir keeps the first
 # line working; the callers below never chain `say` into a success test.
-say() { mkdir -p "$(dirname "$LOG")" 2>/dev/null; printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG" 2>/dev/null || true; }
+say() { mkdir -p "$(dirname "$LOG")" 2>/dev/null; { printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG"; } 2>/dev/null || true; }
 healthy() { curl -sf -m 1 -o /dev/null "http://127.0.0.1:$PORT/health" 2>/dev/null; }
 use_systemd() { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1 && [ "$PORT" = "9120" ]; }
 
