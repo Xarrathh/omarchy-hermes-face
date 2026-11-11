@@ -13,6 +13,12 @@ set -u
 PORT="${HERMES_FACE_PORT:-9120}"
 PREFIX="${HERMES_FACE_PREFIX:-$HOME/.local/share/hermes-face}"
 PEER_PORT="${HERMES_FACE_PEER_PORT:-9910}"
+# pkexec does not fail when there is no one to approve it: with no polkit agent it blocks
+# indefinitely, and that stall lands *before* the restart, so the update installs nothing and the
+# bridge keeps running the old code. A LAN firewall rule is never worth that trade, so every
+# privileged call gets a deadline and a refusal is a warning.
+POLKIT_TIMEOUT="${HERMES_FACE_POLKIT_TIMEOUT:-20}"
+as_root() { timeout "$POLKIT_TIMEOUT" pkexec "$@"; }
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG="$HOME/.cache/hermes-face-bar.log"
 UNIT="$HOME/.config/systemd/user/face-peer.service"
@@ -109,22 +115,27 @@ if [ "${1:-}" = "--firewall" ]; then
   # Use whichever firewall is actually running: Omarchy machines commonly run ufw, where nft -f
   # against "inet filter" fails because the rules live in ufw's own tables.
   applied=0
+  why="no supported firewall is running (ufw, firewalld, or an inet filter table)"
   if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
-    pkexec ufw allow from "$SUBNET" to any port "$PEER_PORT" proto tcp comment 'hermes face peer' >/dev/null 2>&1 && applied=1
-    pkexec ufw allow from "$SUBNET" to any port 9910 proto udp comment 'hermes face beacon' >/dev/null 2>&1 || true
+    as_root ufw allow from "$SUBNET" to any port "$PEER_PORT" proto tcp comment 'hermes face peer' >/dev/null 2>&1 && applied=1
+    as_root ufw allow from "$SUBNET" to any port 9910 proto udp comment 'hermes face beacon' >/dev/null 2>&1 || true
+    [ "$applied" = "1" ] || why="the ufw rules were refused, or pkexec did not finish within ${POLKIT_TIMEOUT}s"
   elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active firewalld >/dev/null 2>&1; then
-    pkexec firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=$SUBNET port port=$PEER_PORT protocol=tcp accept" >/dev/null 2>&1 && applied=1
-    pkexec firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=$SUBNET port port=9910 protocol=udp accept" >/dev/null 2>&1 || true
-    pkexec firewall-cmd --reload >/dev/null 2>&1 || true
-  elif pkexec nft -f "$NUGGET" 2>/dev/null; then
+    as_root firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=$SUBNET port port=$PEER_PORT protocol=tcp accept" >/dev/null 2>&1 && applied=1
+    as_root firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=$SUBNET port port=9910 protocol=udp accept" >/dev/null 2>&1 || true
+    as_root firewall-cmd --reload >/dev/null 2>&1 || true
+    [ "$applied" = "1" ] || why="the firewalld rule was refused, or pkexec did not finish within ${POLKIT_TIMEOUT}s"
+  elif as_root nft -f "$NUGGET" 2>/dev/null; then
     applied=1
+  else
+    why="pkexec refused the nft rule, or did not finish within ${POLKIT_TIMEOUT}s"
   fi
   if [ "$applied" = "1" ]; then
     date '+%F %T' > "$PREFIX/.firewall-applied"
     say "peer: firewall rules applied for $SUBNET"
     echo "applied."
   else
-    echo "not applied: no supported firewall is running (ufw, firewalld, or an inet filter table)." >&2
+    echo "not applied: $why" >&2
     echo "the rule file is ready for when one is: $NUGGET" >&2
     echo "right now the peer port is reachable from the whole LAN, not just $SUBNET" >&2
     exit 1
