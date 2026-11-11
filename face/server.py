@@ -21,6 +21,7 @@ import signal
 import subprocess
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -29,9 +30,6 @@ WEB = HERE / "web"
 AUDIO = HERE / "audio"
 AUDIO.mkdir(exist_ok=True)
 CONFIG = HERE / "config.json"
-# The face's own name and the words that address it. Lives beside the bridge, not in
-# config.json: it is identity, not look, and the peering sidecar reads the same file.
-PEERING = HERE / "peering.json"
 THEME_SYNC_OFF = HERE / "theme-sync-off"      # flag: his colours beat the theme hook
 TOKEN_FILE = HERE / "token"                   # per-user secret; loopback alone is not isolation
 SCHEMA = WEB / "schema.json"
@@ -84,6 +82,7 @@ VOXTYPE_STATE = Path(os.environ.get("HERMES_FACE_VOXTYPE_STATE")
                      or f"/run/user/{os.getuid()}/voxtype/state")
 
 PORT = int(os.environ.get("HERMES_FACE_PORT", "9120"))
+PEERING = HERE / "peering.json"
 # A POST body is a sentence or a dictionary of numbers; anything larger is a mistake or an
 # attack, and reading it whole would let one request exhaust the bridge's memory.
 MAX_BODY = 1 << 20
@@ -176,6 +175,17 @@ PROMPT_PREFIX = (
     "and is never shown, so nothing else belongs in the brackets.\n\n"
 )
 
+# The peer layer teaches the agent what it can reach by dropping a note beside this file.
+# Keeping it in a file means the bridge stays generic and a box without a sidecar simply has
+# no note, rather than carrying instructions for a service that is not running.
+PEER_NOTE = HERE / "peering-note.txt"
+if PEER_NOTE.is_file():
+    try:
+        PROMPT_PREFIX = PROMPT_PREFIX + PEER_NOTE.read_text(encoding="utf-8").strip() + "\n\n"
+    except OSError as _exc:
+        print(f"hermes-face: peering note unreadable: {_exc}", flush=True)
+
+
 MOODS = ("neutral", "warm", "amused", "curious", "excited", "serious", "concerned", "dry")
 MOOD_TAG = re.compile(r"^\s*\[([a-z][a-z \-]{1,19})\]\s*", re.I)
 
@@ -258,7 +268,25 @@ def hermes_caps() -> dict[str, bool]:
         out = ""
     caps["query_file"] = "--query-file" in out
     caps["create_if_missing"] = "--create-if-missing" in out
-    caps["stream_json"] = "stream-json" in out
+    # A substring in `--help` is not proof: 0.21.1 prints "stream-json" somewhere in its help
+    # while rejecting the flag outright, and the face then answers every turn with argparse's
+    # complaint and an empty reply. Ask argparse to judge the flag instead -- an invalid *value*
+    # means the flag exists, an unrecognised *argument* means it does not. The probe exits
+    # non-zero either way and runs no turn.
+    caps["stream_json"] = False
+    try:
+        # Only ask argparse when the help text mentions the flag at all: a CLI that accepts an
+        # arbitrary --format value would otherwise START A REAL TURN with an empty prompt just
+        # to discover that the flag exists, which is not a side effect a probe may have.
+        if "--format" not in out:
+            raise LookupError("no --format flag in help")
+        probe = subprocess.run([str(HERMES), "chat", "--format", "__face_probe__",
+                                "--query-file", os.devnull],
+                               capture_output=True, text=True, timeout=20)
+        said = ((probe.stderr or "") + (probe.stdout or "")).lower()
+        caps["stream_json"] = ("invalid choice" in said or "choose from" in said)
+    except Exception:                              # noqa: BLE001
+        caps["stream_json"] = False
     if os.environ.get("HERMES_FACE_FORCE_OLD_CLI") == "1":
         # Test hook: exercise the pre-0.20 command line on a modern CLI.
         caps = {"query_file": False, "create_if_missing": False, "stream_json": False}
@@ -611,7 +639,11 @@ def synth(text: str, out: Path, voice: str | None = None) -> None:
     # `403 Invalid response status` that succeeds on the next attempt). One retry
     # keeps a single bad token from silencing a whole reply.
     last: Exception | None = None
-    for attempt in range(3):
+    # Five attempts, not three: Edge answers NoAudioReceived in bursts of a few seconds (seen
+    # twice in a row on one box, then six clean turns), and the old 0.8/1.6/2.4 s tail gave up
+    # inside ~5 s -- long enough to lose the sentence, short enough that the face went silent for
+    # no fault of its own. The tail is only paid when the service is already failing.
+    for attempt in range(5):
         try:
             asyncio.run(run())
             if out.is_file() and out.stat().st_size > 0:
@@ -619,7 +651,7 @@ def synth(text: str, out: Path, voice: str | None = None) -> None:
                 return
         except Exception as exc:                   # noqa: BLE001
             last = exc
-        time.sleep(0.8 * (attempt + 1))
+        time.sleep(0.8 * (attempt + 1) if attempt < 3 else 2.0 * (attempt - 1))
     if last:
         raise last
     raise RuntimeError("edge-tts wrote no audio")
@@ -692,7 +724,11 @@ def prune_audio(keep_seq: int | None) -> None:
     for f in AUDIO.glob("*.mp3"):
         m = re.match(r"reply-(\d+)", f.name)
         try:
-            if m and (keep_seq is None or int(m.group(1)) < keep_seq):
+            # Keep the live turn and the two before it, and never delete anything younger than
+            # two minutes. Deleting the previous reply the instant a new turn starts is how a
+            # face shows but says nothing: the page had the path and the file was already gone.
+            fresh = time.time() - f.stat().st_mtime < 120
+            if m and not fresh and (keep_seq is None or int(m.group(1)) < keep_seq - 2):
                 f.unlink(missing_ok=True)
             elif not m and time.time() - f.stat().st_mtime > 86400:
                 f.unlink(missing_ok=True)      # voice-test and boot leftovers
@@ -933,7 +969,90 @@ def handle_command(text: str) -> str:
     return f"Unknown command {cmd}. Try slash help."
 
 
-def run_turn(text: str, seq: int) -> None:
+def _claim_turn(timeout: float = 180.0) -> int | None:
+    """Reserve the face for one turn, or give up and say so.
+
+    The old sequence -- wait for idle, then set thinking -- was two steps with a gap, so three
+    callers arriving together all saw `idle`, all incremented `seq`, and two of the three turns
+    were killed by the third's sequence number. The face answered once and dropped two questions
+    with a 200. Check and claim happen under the same lock here, which makes "who speaks next"
+    a fact rather than a race.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with LOCK:
+            if str(STATE.get("agent") or "idle") == "idle":
+                STATE["seq"] += 1
+                seq = STATE["seq"]
+                STATE.update(agent="thinking", reply="", error="", audio=None, audio_parts=[])
+                return seq
+        time.sleep(0.2)
+    return None
+
+
+def _wait_idle(seconds: float = 45.0) -> bool:
+    """Wait for the current turn to finish instead of talking over it.
+
+    A peer line used to call _kill_turn() outright, so an arriving message cut the answer
+    Pierre was listening to mid-sentence. Waiting is the polite order; killing is the last
+    resort after the deadline.
+    """
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        with LOCK:
+            if STATE["agent"] == "idle":
+                return True
+        time.sleep(0.25)
+    return False
+
+
+def _speak_fixed(seq: int, text: str) -> None:
+    """Speak a line that needs no agent turn: synthesis, then the usual idle timer."""
+    try:
+        speech = clean_for_speech(text).strip()
+        out = AUDIO / f"reply-{seq}-0.mp3"
+        synth(speech, out)
+        if out.stat().st_size == 0:
+            raise RuntimeError("edge-tts wrote an empty file")
+    except Exception as exc:                           # noqa: BLE001
+        set_if_current(seq, agent="idle", error=f"speech failed: {exc}")
+        return
+    with LOCK:
+        if STATE["seq"] != seq:
+            return
+        STATE["audio_parts"].append(f"/audio/{out.name}")
+        STATE["audio"] = f"/audio/{out.name}"
+        STATE["agent"] = "speaking"
+    _auto_idle_after(out.stat().st_size / 6000.0 + 4.0, seq)
+
+
+PEER_URL = os.environ.get("HERMES_FACE_PEER") or "http://127.0.0.1:9910"
+
+
+def peer_route(text: str) -> str:
+    """Ask the peer layer whether this sentence is addressed to another face.
+
+    Returns the acknowledgement to speak, or "" when the sentence is for this face. A missing
+    sidecar is a normal state, not an error: the face then simply answers as itself.
+    """
+    if not text.strip():
+        return ""
+    try:
+        req = urllib.request.Request(
+            PEER_URL.rstrip("/") + "/route",
+            data=json.dumps({"text": text}).encode(),
+            headers={"Content-Type": "application/json", "User-Agent": "hermes-face/peer-route"},
+        )
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            out = json.loads(resp.read() or b"{}")
+    except Exception:                                  # noqa: BLE001
+        return ""
+    if not out.get("handled"):
+        return ""
+    return str(out.get("ack") or "")
+
+
+def run_turn(text: str, seq: int, origin: str = "local") -> None:
     heard = text.strip()
     if not heard:
         set_if_current(seq, agent="idle")
@@ -949,10 +1068,22 @@ def run_turn(text: str, seq: int) -> None:
         with LOCK:
             new_sid = STATE["session"]
     else:
-        qfile = AUDIO / f"q-{int(time.time() * 1000)}.txt"
-        fd = os.open(qfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(PROMPT_PREFIX + heard)
+        # A sentence that names another face is not for this agent: the sidecar takes it, this
+        # face says one line, and the named face answers where it stands.
+        # Only a sentence the human spoke may be routed: a prompt built for a peer turn
+        # begins with that peer's name, and routing it again ping-pongs forever.
+        ack = "" if origin == "peer" else peer_route(heard)
+        if ack:
+            with LOCK:
+                STATE.update(reply=ack, mood=guess_mood(ack), heard=heard, audio=None, audio_parts=[])
+            _speak_fixed(seq, ack)
+            record_turn(heard, ack, sid or FACE_SESSION)
+            return
+        # `--query-file -` reads the prompt from stdin: no temporary file to race with, and his
+        # spoken words never touch the disk. A file was deleted from under the CLI on one box and
+        # the turn died with "cannot read --query-file" -- a race with no upside to keep.
+        qfile = None
+        prompt_text = PROMPT_PREFIX + heard
         # -Q used to be the only programmatic mode, but it still lets a tool's own print
         # (a patch diff) onto stdout, and the face then spoke the code at him. Where the
         # CLI has --format stream-json, the turn speaks the protocol instead and the answer
@@ -960,7 +1091,8 @@ def run_turn(text: str, seq: int) -> None:
         if not hermes_available():
             # The agent is a prerequisite, not a dependency we can install: say which binary is
             # missing rather than failing inside Popen with a traceback in the log.
-            qfile.unlink(missing_ok=True)
+            if qfile is not None:
+                qfile.unlink(missing_ok=True)
             reply = ("I have no Hermes agent to think with. Install Hermes, or point HERMES_BIN at "
                      "its command, and I will answer.")
             record_turn(heard, reply, sid or FACE_SESSION)
@@ -971,14 +1103,14 @@ def run_turn(text: str, seq: int) -> None:
         inline_prompt = False
         cmd = [str(HERMES), "chat"]
         caps = hermes_caps()
-        if caps["query_file"]:
-            cmd += ["--query-file", str(qfile)]
+        use_stdin = bool(caps["query_file"])
+        if use_stdin:
+            cmd += ["--query-file", "-"]
         else:
             # A CLI without --query-file can only take the prompt inline, where another local
             # account can read it out of the process list. That is not a trade to make silently, so
             # it happens only when he has explicitly asked for it; otherwise the face refuses and
             # says why. (`--query-file -` is the modern route: stdin, nothing in argv.)
-            qfile.unlink(missing_ok=True)
             if os.environ.get("HERMES_FACE_ALLOW_INLINE_PROMPT") == "1":
                 cmd += ["-q", PROMPT_PREFIX + heard]
                 inline_prompt = True
@@ -1013,12 +1145,21 @@ def run_turn(text: str, seq: int) -> None:
         for attempt in range(4):
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                        text=True, stdin=subprocess.DEVNULL,
+                                        text=True,
+                                        stdin=subprocess.PIPE if use_stdin else subprocess.DEVNULL,
                                         start_new_session=True)
+                if use_stdin:
+                    # The prompt goes down the pipe now, before anything waits on stdout.
+                    try:
+                        proc.stdin.write(prompt_text)
+                        proc.stdin.close()
+                    except (BrokenPipeError, OSError):
+                        pass
             except Exception as exc:               # noqa: BLE001
                 # The prompt file holds his spoken words: do not leave it behind when the
                 # agent cannot even be spawned.
-                qfile.unlink(missing_ok=True)
+                if qfile is not None:
+                    qfile.unlink(missing_ok=True)
                 reply = f"I hit an error: {exc}"
                 break
             with RUN_LOCK:
@@ -1037,7 +1178,8 @@ def run_turn(text: str, seq: int) -> None:
                 with RUN_LOCK:
                     if RUN["proc"] is proc:
                         RUN["proc"] = None
-                qfile.unlink(missing_ok=True)
+                if qfile is not None:
+                    qfile.unlink(missing_ok=True)
 
             # interrupted: the seq moved on, so this turn's answer is not wanted
             with LOCK:
@@ -1128,9 +1270,9 @@ def run_turn(text: str, seq: int) -> None:
     out = AUDIO / f"reply-{seq}.mp3"
     try:
         synth(speech, out)
-        for old in AUDIO.glob("reply-*.mp3"):
-            if old != out:
-                old.unlink(missing_ok=True)
+        # The file used to be deleted the instant the next reply was ready -- sometimes while the
+        # page was still fetching or playing it, which is a face that shows and says nothing. Age
+        # them out instead: prune_audio keeps anything younger than two minutes.
         if not set_if_current(seq, audio=f"/audio/{out.name}", audio_parts=[f"/audio/{out.name}"]):
             return
         _auto_idle_after(out.stat().st_size / 6000.0 + 4.0, seq)
@@ -1313,15 +1455,6 @@ class Handler(BaseHTTPRequestHandler):
             if len(VOICES) <= len(VOICES_STATIC):
                 refresh_voices()
             return self._json({"voices": VOICES, "current": load_config()["voice"]})
-        if path == "/identity":
-            try:
-                cfg = json.loads(PEERING.read_text(encoding="utf-8"))
-                if not isinstance(cfg, dict):
-                    cfg = {}
-            except (OSError, json.JSONDecodeError):
-                cfg = {}
-            return self._json({"name": cfg.get("name") or "",
-                               "aliases": cfg.get("aliases") or []})
         if path == "/state":
             return self._json(snapshot())
         if path == "/history":
@@ -1331,6 +1464,16 @@ class Handler(BaseHTTPRequestHandler):
             # answer "which binary" or "every path we probed for one": the agent's location is
             # a map of the box, and the authed /state already carries it.
             return self._json({"ok": True, "agent": hermes_available()})
+        if path == "/identity":
+            try:
+                cfg = json.loads(PEERING.read_text(encoding="utf-8"))
+                if not isinstance(cfg, dict):
+                    cfg = {}
+            except (OSError, json.JSONDecodeError):
+                cfg = {}
+            return self._json({"name": cfg.get("name") or "",
+                               "aliases": cfg.get("aliases") or []})
+
         if path.startswith("/audio/"):
             name = os.path.basename(path)
             f = AUDIO / name
@@ -1402,21 +1545,95 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "empty"}, 400)
             if len(text) > MAX_SPOKEN:
                 return self._json({"error": f"text too long (limit {MAX_SPOKEN} characters)"}, 413)
-            # The new command always wins: drop whatever is running instead of
-            # refusing the turn. The killed run notices its seq moved and stays quiet.
-            _kill_turn()
+            # A second conversation used to kill the first: the arriving turn took the bridge and
+            # the older one died mid-sentence, which the peer read as an empty answer. Wait for the
+            # live turn instead, and refuse honestly when it outlasts the ceiling.
+            seq = _claim_turn(180.0)
+            if seq is None:
+                with LOCK:
+                    busy = STATE.get("agent")
+                return self._json({"error": "busy", "agent": busy,
+                                   "hint": "a turn is still running; retry when it is idle"}, 409)
+            with LOCK:
+                STATE.update(mood="curious", heard=text.strip())
+            prune_audio(seq)
+            origin = str(payload.get("origin") or "local")
+            threading.Thread(target=run_turn, args=(text, seq, origin), daemon=True).start()
+            return self._json({"ok": True, "seq": seq})
+
+        if path == "/speak":
+            # Verbatim speech for the peer layer: the text is spoken as written, with no
+            # agent turn behind it, so a face can deliver a line that is not its own answer.
+            # The sequence number is shared with /say, so an arriving peer line cancels a
+            # turn in progress exactly as a new spoken command does.
+            text = str(payload.get("text") or "").strip()
+            if not text:
+                return self._json({"error": "empty"}, 400)
+            if len(text) > MAX_SPOKEN:
+                return self._json({"error": f"text too long (limit {MAX_SPOKEN} characters)"}, 413)
+            if not _wait_idle():
+                _kill_turn()
             with LOCK:
                 STATE["seq"] += 1
                 seq = STATE["seq"]
-                STATE.update(agent="thinking", mood="curious", heard=text.strip(),
-                             reply="", error="", audio=None, audio_parts=[])
+                STATE.update(agent="thinking", mood=guess_mood(text),
+                             heard=str(payload.get("from") or "peer")[:60],
+                             reply=text, error="", audio=None, audio_parts=[])
             prune_audio(seq)
-            threading.Thread(target=run_turn, args=(text, seq), daemon=True).start()
+            out = AUDIO / f"peer-{seq}.mp3"
+
+            def speak_peer_line() -> None:
+                try:
+                    speech = clean_for_speech(text).strip()
+                    if not speech:
+                        raise RuntimeError("nothing left to say")
+                    synth(speech, out)
+                    if out.stat().st_size == 0:
+                        raise RuntimeError("edge-tts wrote an empty file")
+                except Exception as exc:               # noqa: BLE001
+                    set_if_current(seq, agent="idle", error=f"speech failed: {exc}")
+                    return
+                with LOCK:
+                    if STATE["seq"] != seq:
+                        return
+                    STATE["audio"] = f"/audio/{out.name}"
+                    STATE["audio_parts"].append(STATE["audio"])
+                    STATE["agent"] = "speaking"
+                _auto_idle_after(out.stat().st_size / 6000.0 + 4.0, seq)
+
+            threading.Thread(target=speak_peer_line, daemon=True).start()
             return self._json({"ok": True, "seq": seq})
 
+        if path == "/play":
+            # Play audio this bridge already holds, without synthesising anything: the peer
+            # layer relays another face's own voice here, and re-synthesising its words in
+            # this voice would be a different person talking.
+            name = str(payload.get("file") or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}\.mp3", name):
+                return self._json({"error": "bad file name"}, 400)
+            src = AUDIO / name
+            try:
+                if not src.is_file() or src.stat().st_size == 0:
+                    return self._json({"error": "no such audio"}, 404)
+                size = src.stat().st_size
+            except OSError as exc:
+                return self._json({"error": f"unreadable: {exc}"}, 500)
+            if not _wait_idle():
+                _kill_turn()
+            with LOCK:
+                STATE["seq"] += 1
+                seq = STATE["seq"]
+                STATE.update(agent="speaking", heard=str(payload.get("from") or "peer")[:60],
+                             reply=str(payload.get("text") or "")[:MAX_SPOKEN] or STATE["reply"],
+                             mood=guess_mood(str(payload.get("text") or "")),
+                             error="", audio=f"/audio/{name}", audio_parts=[f"/audio/{name}"])
+            _auto_idle_after(size / 6000.0 + 4.0, seq)
+            return self._json({"ok": True, "seq": seq, "audio": f"/audio/{name}"})
+
         if path == "/identity":
-            # The panel is the place a person looks, so the panel must be able to change it:
-            # a file-only setting is why "where do I put the name" had no answer.
+            # This face's spoken name, written where face-peer reads it. The panel is the place a
+            # person looks, so the panel must be able to change it: a file-only setting is the
+            # reason "where do I put the name" had no answer.
             name = str(payload.get("name") or "").strip()[:40]
             aliases = payload.get("aliases")
             if not name:
