@@ -25,6 +25,12 @@ UNIT="$HOME/.config/systemd/user/$UNIT_NAME"
 # line working; the callers below never chain `say` into a success test.
 say() { mkdir -p "$(dirname "$LOG")" 2>/dev/null; { printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG"; } 2>/dev/null || true; }
 healthy() { curl -sf -m 1 -o /dev/null "http://127.0.0.1:$PORT/health" 2>/dev/null; }
+# The process that answers is not necessarily the process that was installed: cp -f replaces the
+# file while the running bridge keeps the old code in memory, and /health says nothing about which
+# code imported it. This is the pid holding the port, so a caller can prove it moved.
+holder_pid() {
+  ss -ltnp 2>/dev/null | grep ":$PORT " | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2
+}
 use_systemd() { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1 && [ "$PORT" = "9120" ]; }
 
 mkdir -p "$PREFIX" || { say "ensure: cannot create $PREFIX"; exit 1; }
@@ -71,6 +77,9 @@ sync_code() {
 }
 
 CHANGED=0
+# Who is serving before we touch anything. If the code changes and this pid is still the one holding
+# the port 30 seconds later, nothing reloaded no matter how healthy the endpoint looks.
+PRE_PID="$(healthy && holder_pid || true)"
 sync_code && CHANGED=1
 
 # Speech engine: prefer a working copy, else a private venv beside the face (no root).
@@ -303,13 +312,29 @@ else
     fi
   fi
   say "ensure: starting a detached bridge on port $PORT"
-  ( cd "$PREFIX" && setsid env HERMES_FACE_PORT="$PORT" PYTHONUNBUFFERED=1 "$PY" server.py >/dev/null 2>&1 & )
+  # Keep the pid we started: if it dies (a bind behind an old holder fails instantly) the old bridge
+  # keeps answering /health and the wait loop below would call that success.
+  ( cd "$PREFIX" && setsid env HERMES_FACE_PORT="$PORT" PYTHONUNBUFFERED=1 "$PY" server.py >/dev/null 2>&1 & echo $! > "$PREFIX/.last-start-pid" )
+  NEW_PID="$(cat "$PREFIX/.last-start-pid" 2>/dev/null || true)"
 fi
 
 for _ in $(seq 1 120); do
   # `healthy && say ... && ok && exit 0` reported a failure whenever the logger could not write,
   # which is a false alarm about the bridge dressed as a real one. The success test is `healthy`.
-  if healthy; then say "ensure: bridge is answering"; ok; exit 0; fi
+  if healthy; then
+    # …and a healthy endpoint is not proof the new code is running. Observed on a real install: the
+    # script logged "code updated", exited 0, and left the pid from 40 minutes earlier answering,
+    # because the old process never gave up the port. A start that binds behind it fails silently.
+    if [ "$CHANGED" = "1" ] && [ -n "${PRE_PID:-}" ] && [ "$(holder_pid)" = "$PRE_PID" ]; then
+      fail "code updated but pid $PRE_PID is still serving — the new code is on disk and not running"
+    fi
+    # The same failure without a readable port owner: the process we started exited, and what is
+    # answering now is the bridge we were meant to replace.
+    if [ "$CHANGED" = "1" ] && [ -n "${NEW_PID:-}" ] && ! kill -0 "$NEW_PID" 2>/dev/null; then
+      fail "the bridge started after the update (pid $NEW_PID) is gone; pid $(holder_pid) is answering with the old code"
+    fi
+    say "ensure: bridge is answering (pid $(holder_pid))"; ok; exit 0
+  fi
   sleep 0.25
 done
 if use_systemd; then
