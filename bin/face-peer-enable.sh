@@ -5,7 +5,9 @@
 # user run to say yes to it, and it is the only thing that opens the port.
 #
 # What it does:
-#   * copies peer.py beside the bridge and writes face-peer.service for this host's own name;
+#   * copies the current sidecar (face_peer.py) beside the bridge and writes face-peer.service for
+#     this host's own name — the same file and the same name the hermes-face repo vendors, so a
+#     box that was set up by hand is not silently moved onto an older program under a second name;
 #   * creates the shared peer key (0600) if it does not exist yet — copy that file to the other
 #     face so the two agree;
 #   * prints the firewall rule you need, and applies it only when you pass --firewall.
@@ -38,8 +40,15 @@ if [ -f "$UNIT" ] && [ -z "${HERMES_FACE_NAME:-}" ] && [ -z "${HERMES_FACE_ID:-}
 fi
 
 mkdir -p "$PREFIX" || exit 1
-install -Dm755 "$PLUGIN_DIR/face/peer.py" "$PREFIX/peer.py" || { say "peer: cannot install peer.py"; exit 1; }
-say "peer: installed peer.py as $ID"
+install -Dm755 "$PLUGIN_DIR/face/face_peer.py" "$PREFIX/face_peer.py" \
+  || { say "peer: cannot install face_peer.py"; exit 1; }
+# Older installs were pointed at peer.py, a copy that froze two protocol generations back: no build
+# beacon, and the guard it shipped let a peer with no build pass silently. Leaving that file beside
+# a working sidecar is how three boxes ended up arguing about which one was running.
+if [ -f "$PREFIX/peer.py" ]; then
+  rm -f "$PREFIX/peer.py" && say "peer: removed the stale peer.py (superseded by face_peer.py)"
+fi
+say "peer: installed face_peer.py as $ID"
 
 mkdir -p "$(dirname "$UNIT")"
 cat > "$UNIT" <<EOF
@@ -50,7 +59,7 @@ After=hermes-face.service
 [Service]
 Type=simple
 WorkingDirectory=$PREFIX
-ExecStart=$PY $PREFIX/peer.py --name $NAME --id $ID --port $PEER_PORT \\
+ExecStart=$PY $PREFIX/face_peer.py --name $NAME --id $ID --port $PEER_PORT \\
   --face-url http://127.0.0.1:$PORT --token-file $PREFIX/token --key-file $PREFIX/peer.key --relay
 Environment=PYTHONUNBUFFERED=1
 Restart=always
