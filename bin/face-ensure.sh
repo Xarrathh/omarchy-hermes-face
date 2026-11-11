@@ -165,11 +165,13 @@ install_extras
 # of that install: applied once, when the peer is first enabled, and never re-prompted.
 if [ -f "$PREFIX/peer.key" ] || [ "${HERMES_FACE_PEER:-0}" = "1" ]; then
   if [ ! -f "$PREFIX/.firewall-applied" ]; then
-    bash "$PLUGIN_DIR/bin/face-peer-enable.sh" --firewall >/dev/null 2>&1 \
+    # Belt and braces under the per-pkexec deadline inside that script: whatever it waits on, the
+    # update itself must reach the restart. A refused approval is a warning, never a stall.
+    timeout 90 bash "$PLUGIN_DIR/bin/face-peer-enable.sh" --firewall >/dev/null 2>&1 \
       && say "ensure: peer firewall rule applied" \
-      || say "ensure: peer firewall rule not applied (approval dismissed?) — file is at $PREFIX/peer-firewall.nft"
+      || say "ensure: peer firewall rule not applied (approval dismissed, or no polkit agent) — file is at $PREFIX/peer-firewall.nft"
   else
-    bash "$PLUGIN_DIR/bin/face-peer-enable.sh" >/dev/null 2>&1 || say "ensure: peer enable failed"
+    timeout 90 bash "$PLUGIN_DIR/bin/face-peer-enable.sh" >/dev/null 2>&1 || say "ensure: peer enable failed"
   fi
 fi
 
